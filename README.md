@@ -1,2 +1,2 @@
 # datamath
-Mathematical calculation library, used in the database
+Mathematical calculation library
