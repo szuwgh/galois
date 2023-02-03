@@ -1,3 +1,5 @@
+use std::collections::btree_map::Range;
+
 pub trait Zero {
     fn zero() -> Self;
 }
@@ -16,16 +18,38 @@ macro_rules! zero_impl {
 zero_impl!(f32, 0.0);
 zero_impl!(f64, 0.0);
 
-pub type Array<S, D> = ArrayData<Vec<S>, D>;
+pub type Array<S, D> = ArrayData<OwnedPtr<S>, D>;
 
 pub type Matrix<S> = Array<S, [usize; 2]>;
 
 pub type Matrix3D<S> = Array<S, [usize; 3]>;
 
+pub trait BaseData {
+    type Elem;
+    fn new(elements: Vec<Self::Elem>) -> Self;
+}
+
 pub struct OwnedPtr<P> {
     ptr: *const P,
     len: usize,
     cap: usize,
+}
+
+impl<P> BaseData for OwnedPtr<P> {
+    type Elem = P;
+
+    fn new(elements: Vec<Self::Elem>) -> Self {
+        OwnedPtr::from(elements)
+    }
+}
+
+impl<P> OwnedPtr<P> {
+    pub(crate) fn from(v: Vec<P>) -> Self {
+        let len = v.len();
+        let cap = v.capacity();
+        let ptr = v.as_ptr();
+        Self { ptr, len, cap }
+    }
 }
 
 pub struct ArrayData<S, D>
@@ -36,25 +60,31 @@ where
     dim: D,
 }
 
-impl<S, D> Array<S, D>
+impl<A, S, D> ArrayData<S, D>
 where
+    S: BaseData<Elem = A>,
     D: Dimension,
 {
-    fn new() {}
-
-    fn from_elem(d: D, s: S) -> Self
+    fn from_elem(d: D, s: A) -> Self
     where
-        S: Clone,
+        A: Clone,
     {
-        let s = vec![s; d.size()];
-        Self { data: s, dim: d }
+        let v = vec![s; d.size()];
+        Self::from_vec(d, v)
+    }
+
+    fn from_vec(d: D, v: Vec<A>) -> Self {
+        Self {
+            data: BaseData::new(v),
+            dim: d,
+        }
     }
 
     fn zeros(d: D) -> Self
     where
-        S: Clone + Zero,
+        A: Clone + Zero,
     {
-        Self::from_elem(d, S::zero())
+        Self::from_elem(d, A::zero())
     }
 }
 
@@ -99,7 +129,7 @@ mod tests {
     fn test_tuple() {
         let x = (1, 2, 3);
         // let a = Array::<f64, _>::zeros((1, 2));
-        let x = Matrix::<f64>::zeros([2, 3]);
-        println!("{:?}", x.data);
+        // let x = Matrix::<f64>::zeros([2, 3]);
+        // println!("{:?}", x.data);
     }
 }
