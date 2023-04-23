@@ -11,11 +11,18 @@ use std::ptr::NonNull;
 #[macro_export]
 macro_rules! tensor {
     ($([$([$($x:expr),* $(,)*]),+ $(,)*]),+ $(,)*) => {{
-        $crate::Matrix3D::from(vec![$([$([$($x,)*],)*],)*])
+        $crate::Cube::from(vec![$([$([$($x,)*],)*],)*])
     }};
     ($([$($x:expr),* $(,)*]),+ $(,)*) => {{
         $crate::Matrix::from(vec![$([$($x,)*],)*])
     }};
+    ($($x:expr),* $(,)*) => {{
+        $crate::Array::from(vec![$($x,)*])
+    }};
+}
+
+#[macro_export]
+macro_rules! arr {
     ($($x:expr),* $(,)*) => {{
         $crate::Array::from(vec![$($x,)*])
     }};
@@ -41,14 +48,17 @@ zero_impl!(f64, 0.0);
 
 pub type Tensor<A, D> = TensorData<OwnerSlice<A>, D>;
 
-//real only nd Tensor
-pub type TensorView<'a, A, D> = TensorData<ViewSlice<A>, D>;
-
+//一维数组
 pub type Array<A> = Tensor<A, [usize; 1]>;
 
+//二维数组
 pub type Matrix<A> = Tensor<A, [usize; 2]>;
 
-pub type Matrix3D<A> = Tensor<A, [usize; 3]>;
+//三维数组
+pub type Cube<A> = Tensor<A, [usize; 3]>;
+
+//real only nd Tensor
+pub type TensorView<'a, A, D> = TensorData<ViewSlice<A>, D>;
 
 pub fn arr2<A: Clone, const N: usize>(xs: Vec<[A; N]>) -> Matrix<A> {
     let dim = [xs.len(), N];
@@ -113,7 +123,6 @@ impl<P> BaseData for ViewSlice<P> {
 pub struct OwnerSlice<P> {
     ptr: NonNull<P>,
     len: usize,
-    cap: usize,
 }
 
 impl<P> BaseData for OwnerSlice<P> {
@@ -140,9 +149,9 @@ impl<P> OwnerSlice<P> {
     pub(crate) fn from(mut v: Vec<P>) -> Self {
         let mut v = ManuallyDrop::new(v);
         let len = v.len();
-        let cap = v.capacity();
+        // let cap = v.capacity();
         let ptr = unsafe { NonNull::new_unchecked(v.as_mut_ptr()) };
-        Self { ptr, len, cap }
+        Self { ptr, len }
     }
 
     pub(crate) fn as_slice_mut(&self) -> &mut [P] {
@@ -170,7 +179,6 @@ where
     {
         let stride = self.stride.slice()[a.index()];
         let offset = index * stride;
-        // println!("offset:{}", offset);
         let axis_dim = self.dim.select_axis(a);
         TensorView::new(
             ViewSlice {
