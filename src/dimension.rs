@@ -88,7 +88,6 @@ macro_rules! dimension_impl_array {
                 let src = self.slice();
                 dst[..a.index()].copy_from_slice(&src[..a.index()]);
                 dst[a.index()..].copy_from_slice(&src[a.index() + 1..]);
-                // println!("dst:{:?}", dst);
                 dst
             }
 
