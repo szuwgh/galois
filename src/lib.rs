@@ -5,9 +5,7 @@ use crate::dimension::{Axis, Dimension};
 use core::ptr::{self, NonNull};
 use rawpointer::PointerExt;
 use std::fmt;
-use std::mem::ManuallyDrop;
-use std::vec::from_elem;
-
+use std::mem::forget;
 #[macro_export]
 macro_rules! tensor {
     ($([$([$($x:expr),* $(,)*]),+ $(,)*]),+ $(,)*) => {{
@@ -46,7 +44,9 @@ macro_rules! zero_impl {
 zero_impl!(f32, 0.0);
 zero_impl!(f64, 0.0);
 
-pub type Tensor<A, D> = TensorData<OwnerSlice<A>, D>;
+pub struct Dim {
+    dim: Box<[usize]>,
+}
 
 //一维数组
 pub type Array<A> = Tensor<A, [usize; 1]>;
@@ -57,66 +57,39 @@ pub type Matrix<A> = Tensor<A, [usize; 2]>;
 //三维数组
 pub type Cube<A> = Tensor<A, [usize; 3]>;
 
-//real only nd Tensor
-pub type TensorView<'a, A, D> = TensorData<ViewSlice<A>, D>;
+//四维维数组
+pub type Ten4<A> = Tensor<A, [usize; 4]>;
 
-pub fn mat<A: Clone, const N: usize>(xs: Vec<[A; N]>) -> Matrix<A> {
-    let dim = [xs.len(), N];
-    todo!();
-    //Tensor::from_vec(dim, xs)
-    //Array2::from(xs.to_vec())
+//动态数组
+pub type TenD<A> = Tensor<A, [usize; 4]>;
+
+pub fn mat<A: Clone, const N: usize>(xs: &[[A; N]]) -> Matrix<A> {
+    Matrix::from(xs.to_vec())
 }
 
-pub trait BaseData {
-    type Elem;
-    fn new(elements: Vec<Self::Elem>) -> Self;
-
-    fn as_ptr(&self) -> NonNull<Self::Elem>;
-
-    fn as_slice(&self) -> &[Self::Elem];
-
-    fn len(&self) -> usize;
-}
-
-impl<'a, A, D> TensorView<'a, A, D>
-where
-    D: Dimension,
-{
-    fn new(v: ViewSlice<A>, d: D) -> TensorView<'a, A, D>
-    where
-        D: Dimension,
-    {
-        let stride = d.strides();
-        Self {
-            data: v,
-            dim: d,
-            stride: stride,
-        }
+impl<A, const N: usize> From<Vec<[A; N]>> for Matrix<A> {
+    fn from(mut xs: Vec<[A; N]>) -> Self {
+        let dim = [xs.len(), N];
+        let ptr = xs.as_mut_ptr();
+        let cap = dim.size();
+        forget(xs);
+        let data = RawTen::from_raw_parts(ptr as *mut A, cap, cap);
+        Matrix::from_raw_data(data, dim)
     }
 }
 
-pub struct ViewSlice<P> {
-    ptr: NonNull<P>,
-    len: usize,
+pub fn cube<A: Clone, const N: usize, const M: usize>(xs: &[[[A; N]; M]]) -> Cube<A> {
+    Cube::from(xs.to_vec())
 }
 
-impl<P> BaseData for ViewSlice<P> {
-    type Elem = P;
-
-    fn new(elements: Vec<Self::Elem>) -> Self {
-        todo!()
-    }
-
-    fn as_ptr(&self) -> NonNull<Self::Elem> {
-        self.ptr
-    }
-
-    fn as_slice(&self) -> &[P] {
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const P, self.len) }
-    }
-
-    fn len(&self) -> usize {
-        self.len
+impl<A, const N: usize, const M: usize> From<Vec<[[A; N]; M]>> for Cube<A> {
+    fn from(mut xs: Vec<[[A; N]; M]>) -> Self {
+        let dim = [xs.len(), N, M];
+        let ptr = xs.as_mut_ptr();
+        let cap = dim.size();
+        forget(xs);
+        let data = RawTen::from_raw_parts(ptr as *mut A, cap, cap);
+        Cube::from_raw_data(data, dim)
     }
 }
 
@@ -219,6 +192,16 @@ impl<P> RawTen<P> {
         self.len
     }
 
+    fn from_raw_parts(ptr: *mut P, length: usize, capacity: usize) -> Self {
+        unsafe {
+            Self {
+                ptr: NonNull::new_unchecked(ptr),
+                len: length,
+                cap: capacity,
+            }
+        }
+    }
+
     fn fill(&mut self, elem: P, n: usize)
     where
         P: Clone,
@@ -226,186 +209,159 @@ impl<P> RawTen<P> {
         unsafe {
             let mut ptr = self.as_ptr_mut().add(self.len());
             let mut local_len = SetLenOnDrop::new(&mut self.len);
-
-            // Write all elements except the last one
             for _ in 1..n {
                 ptr::write(ptr, elem.clone());
                 ptr = ptr.add(1);
-                // Increment the length in every step in case next() panics
+
                 local_len.increment_len(1);
             }
-
             if n > 0 {
-                // We can write the last element directly without cloning needlessly
                 ptr::write(ptr, elem);
                 local_len.increment_len(1);
             }
-
-            // len set by scope guard
         }
     }
 }
 
-// pub fn new(row_capacity: usize, col_capacity: usize) -> Self {
-//     if core::mem::size_of::<T>() == 0 {
-//         Self {
-//             ptr: NonNull::<T>::dangling(),
-//             row_capacity,
-//             col_capacity,
-//         }
-//     } else {
-//         let cap = row_capacity
-//             .checked_mul(col_capacity)
-//             .unwrap_or_else(capacity_overflow);
-//         let cap_bytes = cap
-//             .checked_mul(core::mem::size_of::<T>())
-//             .unwrap_or_else(capacity_overflow);
-//         if cap_bytes > isize::MAX as usize {
-//             capacity_overflow::<()>();
-//         }
-
-//         use alloc::alloc::{alloc, handle_alloc_error, Layout};
-
-//         let layout = Layout::from_size_align(cap_bytes, align_for::<T>())
-//             .ok()
-//             .unwrap_or_else(capacity_overflow);
-
-//         let ptr = if layout.size() == 0 {
-//             core::ptr::NonNull::<T>::dangling()
-//         } else {
-//             // SAFETY: we checked that layout has non zero size
-//             let ptr = unsafe { alloc(layout) } as *mut T;
-//             if ptr.is_null() {
-//                 handle_alloc_error(layout)
-//             } else {
-//                 // SAFETY: we checked that the pointer is not null
-//                 unsafe { NonNull::<T>::new_unchecked(ptr) }
-//             }
-//         };
-
-//         Self {
-//             ptr,
-//             row_capacity,
-//             col_capacity,
-//         }
-//     }
-// }
-
-// fn allocate_in(capacity: usize, init: AllocInit, alloc: A) -> Self {
-//     // Don't allocate here because `Drop` will not deallocate when `capacity` is 0.
-//     if T::IS_ZST || capacity == 0 {
-//         Self::new_in(alloc)
-//     } else {
-//         // We avoid `unwrap_or_else` here because it bloats the amount of
-//         // LLVM IR generated.
-//         let layout = match Layout::array::<T>(capacity) {
-//             Ok(layout) => layout,
-//             Err(_) => capacity_overflow(),
-//         };
-//         match alloc_guard(layout.size()) {
-//             Ok(_) => {}
-//             Err(_) => capacity_overflow(),
-//         }
-//         let result = match init {
-//             AllocInit::Uninitialized => alloc.allocate(layout),
-//             AllocInit::Zeroed => alloc.allocate_zeroed(layout),
-//         };
-//         let ptr = match result {
-//             Ok(ptr) => ptr,
-//             Err(_) => handle_alloc_error(layout),
-//         };
-
-//         // Allocators currently return a `NonNull<[u8]>` whose length
-//         // matches the size requested. If that ever changes, the capacity
-//         // here should change to `ptr.len() / mem::size_of::<T>()`.
-//         Self {
-//             ptr: unsafe { Unique::new_unchecked(ptr.cast().as_ptr()) },
-//             cap: capacity,
-//             alloc,
-//         }
-//     }
-//}
-
-pub struct OwnerSlice<P> {
-    ptr: NonNull<P>,
-    len: usize,
-}
-
-impl<P> BaseData for OwnerSlice<P> {
-    type Elem = P;
-
-    fn new(elements: Vec<Self::Elem>) -> Self {
-        OwnerSlice::from(elements)
-    }
-
-    fn as_ptr(&self) -> NonNull<Self::Elem> {
-        self.ptr
-    }
-
-    fn as_slice(&self) -> &[P] {
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const P, self.len) }
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-}
-
-impl<P> OwnerSlice<P> {
-    pub(crate) fn from(v: Vec<P>) -> Self {
-        let mut v = ManuallyDrop::new(v);
-        let len = v.len();
-        // let cap = v.capacity();
-        let ptr = unsafe { NonNull::new_unchecked(v.as_mut_ptr()) };
-        Self { ptr, len }
-    }
-
-    pub(crate) fn as_slice_mut(&self) -> &mut [P] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
-    }
-}
-
-pub struct TensorData<S, D>
+pub struct TenRef<A, D>
 where
     D: Dimension,
 {
-    data: S,
+    ptr: NonNull<A>,
+    len: usize,
     dim: D,
     stride: D,
 }
 
-impl<A, S, D> TensorData<S, D>
+impl<A, D> TenRef<A, D>
 where
-    S: BaseData<Elem = A>,
     D: Dimension,
 {
-    fn axis_index(&mut self, a: Axis, index: usize) -> TensorView<'_, A, D::AxisDimension>
+    ///
+    ///```
+    /// let a = arr2(&[[1., 2. ],    // ... axis 0, row 0
+    ///                [3., 4. ],    // --- axis 0, row 1
+    ///                [5., 6. ]]);  // ... axis 0, row 2
+    /// //               .   \
+    /// //                .   axis 1, column 1
+    /// //                 axis 1, column 0
+    /// assert!(
+    ///     a.index_axis(Axis(0), 1) == ArrayView::from(&[3., 4.]) &&
+    ///     a.index_axis(Axis(1), 1) == ArrayView::from(&[2., 4., 6.])
+    /// );
+    /// ```
+    ///```
+    ///
+    ///
+    /// data =[[a00, a01],
+    ///        [a10, a11]]
+    /// 所以axis=0时，沿着第0个下标变化的方向进行操作，也就是a00->a10, a01->a11，也就是纵坐标的方向，axis=1时也类似。
+    ///
+    ///
+    /// array([[[[3, 5, 5, 0],
+    ///     [0, 1, 2, 4],
+    ///     [0, 5, 0, 5]],    # D0000  ->   D0023
+    ///
+    ///     [[5, 5, 0, 0],
+    ///      [2, 1, 5, 0],
+    ///      [1, 0, 0, 1]]],  # D0100  ->   D0123
+
+    ///   [[[0, 5, 1, 2],
+    ///     [4, 4, 2, 2],
+    ///     [3, 5, 0, 1]],    # D1000  ->   D1023
+
+    ///    [[5, 1, 2, 1],
+    ///     [2, 2, 3, 5],
+    ///     [5, 3, 3, 3]]],   # D1100  ->   D1123
+
+    ///   [[[2, 4, 1, 4],
+    ///     [1, 4, 1, 4],
+    ///     [4, 5, 0, 2]],    # D2000  ->   D2023
+
+    ///    [[2, 5, 5, 1],
+    ///     [5, 3, 0, 2],
+    ///     [4, 0, 1, 3]]],   # D2100  ->   D2123
+
+    ///   [[[1, 3, 4, 5],
+    ///     [0, 2, 5, 4],
+    ///     [2, 3, 5, 3]],    # D3000  ->   D3023
+
+    ///    [[2, 2, 2, 2],
+    ///     [3, 2, 1, 3],
+    /// 所以axis=0时，沿着第0个下标变化的方向进行操作，也就是a00->a10, a01->a11，也就是纵坐标的方向，axis=1时也类似。
+    /// 所以axis=0时，沿着第0个下标变化的方向进行操作
+    /// 四维的求sum的例子
+    /// 当axis=0时，numpy验证第0维的方向来求和，也就是第一个元素值=D0000+D1000+D2000+D3000=3+0+2+1=6,第二个元素=D0001+D1001+D2001+D3001=5+5+4+3=17
+    /// 当axis=0时，numpy验证第0维的方向来求和，也就是第一个元素值=D0000+D1000+D2000+D3000=3+0+2+1=6,第二个元素=D0001+D1001+D2001+D3001=5+5+4+3=17，同理可得最后的结果如下：
+    /// 当axis=3时，numpy验证第3维的方向来求和，也就是第一个元素值=D0000+D0001+D0002+D0003=3+5+5+0=13,第二个元素=D0010+D0011+D0012+D0013=0+1+2+4=7，同理可得最后的结果如下
+    /// ```
+    fn axis_index(&mut self, a: Axis, index: usize) -> TenRef<A, D::AxisDimension>
     where
         D: Dimension,
     {
         let stride = self.stride.slice()[a.index()];
         let offset = index * stride;
         let axis_dim = self.dim.select_axis(a);
-        TensorView::new(
-            ViewSlice {
-                ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
-                len: self.data.len() - offset,
-            },
-            axis_dim,
-        )
+        let s = axis_dim.strides();
+        TenRef {
+            ptr: unsafe { self.ptr.offset(offset as isize) },
+            len: self.len - offset,
+            dim: axis_dim,
+            stride: s,
+        }
     }
 
-    pub fn view(&self) -> TensorView<'_, A, D>
+    pub fn slice(&self) -> &[A] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const A, self.len) }
+    }
+
+    pub fn shape(&self) -> &[usize] {
+        self.dim.slice()
+    }
+
+    pub fn size(&self) -> usize {
+        self.dim.size()
+    }
+
+    pub fn dim(&self) -> usize {
+        self.dim.dim()
+    }
+}
+
+// impl<A, D> TenRef<A, D> {}
+
+pub struct Tensor<A, D>
+where
+    D: Dimension,
+{
+    data: RawTen<A>,
+    dim: D,
+    stride: D,
+}
+
+impl<A, D> Tensor<A, D>
+where
+    D: Dimension,
+{
+    pub fn from_raw_data(data: RawTen<A>, d: D) -> Self {
+        let stride = d.strides();
+        Self {
+            data: data,
+            dim: d,
+            stride: stride,
+        }
+    }
+
+    pub fn as_ref<'a>(&'a self) -> TenRef<A, D>
     where
         D: Dimension,
     {
-        TensorView::new(
-            ViewSlice {
-                ptr: self.data.as_ptr(),
-                len: self.data.len(),
-            },
-            self.dim.clone(),
-        )
+        TenRef {
+            ptr: self.data.ptr,
+            len: self.data.len,
+            dim: self.dim.clone(),
+            stride: self.stride.clone(),
+        }
     }
 
     pub fn from_elem(s: A, d: D) -> Self
@@ -413,15 +369,20 @@ where
         A: Clone,
     {
         //申请内存
-        let v = vec![s; d.size()];
-
-        Self::from_vec(v, d)
+        let mut v = RawTen::with_capacity(d.size());
+        v.fill(s, d.size());
+        let stride = d.strides();
+        Self {
+            data: v,
+            dim: d,
+            stride: stride,
+        }
     }
 
     pub fn from_vec(v: Vec<A>, d: D) -> Self {
         let stride = d.strides();
         Self {
-            data: BaseData::new(v),
+            data: RawTen::from_raw_parts(v.as_ptr() as *mut A, v.len(), v.capacity()),
             dim: d,
             stride: stride,
         }
@@ -451,18 +412,18 @@ where
     }
 }
 
-impl<A: fmt::Debug, S, D> fmt::Debug for TensorData<S, D>
+impl<A: fmt::Debug, D> fmt::Debug for Tensor<A, D>
 where
-    S: BaseData<Elem = A>,
     D: Dimension,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        format_tensor(self.view(), f)
+        format_tensor(self.as_ref(), 0, f)
     }
 }
 
 fn format_tensor<A: fmt::Debug, D>(
-    mut tensor: TensorView<'_, A, D>,
+    mut tensor: TenRef<A, D>,
+    depth: usize,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result
 where
@@ -481,10 +442,14 @@ where
             f.write_str("]")?;
         }
         shape => {
-            f.write_str("\n")?;
+            let blank_lines = "\n".repeat(shape.len() - 2);
+            let indent = " ".repeat(depth + 1);
+            let separator = format!(",\n{}{}", blank_lines, indent);
             f.write_str("[")?;
+
             for i in 0..shape[0] {
-                format_tensor(tensor.axis_index(Axis::Row, i), f)?;
+                f.write_str(&separator)?;
+                format_tensor(tensor.axis_index(Axis(0), i), depth, f)?;
             }
             f.write_str("]")?;
         }
@@ -500,21 +465,40 @@ mod tests {
     fn test_rawten() {
         let mut t = RawTen::<u32>::with_capacity(10);
         t.fill(3, 10);
-        println!("t:{:?}", t.as_slice());
+        println!("t:{:?}", t.take_as_vec());
+    }
+
+    #[test]
+    fn test_mat() {
+        let m = mat(&[[1.0, 2.0], [3.0, 4.0]]);
+        let v = m.slice();
+        let t = m.as_ref();
+        println!("v:{:?}", m);
+    }
+
+    #[test]
+    fn test_cude() {
+        let m = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
+        let v = m.slice();
+        let t = m.as_ref();
+        println!("v:{:?}", m);
     }
 
     #[test]
     fn test_fmt() {
         // let x = (1, 2, 3);
         // let b = Vec::new();
-        let a = Tensor::<f64, _>::zeros([4usize, 3, 2]);
+        // b.as_ref()
+
+        let a = Tensor::<f64, _>::from_elem(1.0, [4usize, 3, 2]);
         let v = a.slice();
+        let t = a.as_ref();
         println!("v:{:?}", v);
         // let x = Matrix::<f64>::zeros([2, 3]);
         // println!("xxx");
         // shape=[4, 3, 2, 2], strides=[12, 4, 2, 1]
         //let x: [usize; 4] = [4, 3, 2, 2];
         //let z = x.strides();
-        println!("{:?}", a);
+        // println!("{:?}", t);
     }
 }

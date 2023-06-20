@@ -1,19 +1,19 @@
-use super::{BaseData, TensorData};
+use super::{Dimension, TenRef};
 
 pub trait Add<Rhs = Self> {
     type Output;
     fn add(self, rhs: Rhs) -> Self::Output;
 }
 
-// impl<A, S, D> Add<ArrayData<S, D>> for ArrayData<S, D>
-// where
-//     S: BaseData<Elem = A>,
-//     D: Dimension,
-// {
-//     type Output = ArrayData<S, D>;
-//     fn add(self, rhs: ArrayData<S, D>) -> Self::Output {
-//         // if self.dim() == rhs.dim() && self.shape() == rhs.shape() {
-//         // Self::Output::with_dim()
-//         //}
-//     }
-// }
+impl<A, D> Add<TenRef<A, D>> for TenRef<A, D>
+where
+    D: Dimension,
+{
+    type Output = TenRef<A, D>;
+    fn add(self, rhs: TenRef<A, D>) -> Self::Output {
+        todo!();
+        // if self.dim() == rhs.dim() && self.shape() == rhs.shape() {
+        // Self::Output::with_dim()
+        //}
+    }
+}

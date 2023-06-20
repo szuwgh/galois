@@ -1,14 +1,8 @@
-pub enum Axis {
-    Row,
-    Column,
-}
+pub struct Axis(pub usize);
 
 impl Axis {
     pub fn index(&self) -> usize {
-        match self {
-            &Axis::Row => 0,
-            &Axis::Column => 1,
-        }
+        self.0
     }
 }
 
@@ -154,7 +148,7 @@ mod tests {
     #[test]
     fn test_select_axis() {
         let d = [4usize, 3, 2];
-        let d2 = d.select_axis(Axis::Row);
+        let d2 = d.select_axis(Axis(0));
         println!("{:?}", d2);
     }
 }
