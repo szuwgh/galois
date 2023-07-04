@@ -1,7 +1,8 @@
 mod dimension;
 mod method;
+mod zip;
 extern crate alloc;
-use crate::dimension::{Axis, Dimension};
+use crate::dimension::{Axis, Dimension, DynDim};
 use core::ptr::{self, NonNull};
 use rawpointer::PointerExt;
 use std::fmt;
@@ -44,24 +45,20 @@ macro_rules! zero_impl {
 zero_impl!(f32, 0.0);
 zero_impl!(f64, 0.0);
 
-pub struct Dim {
-    dim: Box<[usize]>,
-}
-
 //一维数组
-pub type Array<A> = Tensor<A, [usize; 1]>;
+pub type Array<A> = TensorData<A, [usize; 1]>;
 
 //二维数组
-pub type Matrix<A> = Tensor<A, [usize; 2]>;
+pub type Matrix<A> = TensorData<A, [usize; 2]>;
 
 //三维数组
-pub type Cube<A> = Tensor<A, [usize; 3]>;
+pub type Cube<A> = TensorData<A, [usize; 3]>;
 
 //四维维数组
-pub type Ten4<A> = Tensor<A, [usize; 4]>;
+pub type Ten4<A> = TensorData<A, [usize; 4]>;
 
 //动态数组
-pub type TenD<A> = Tensor<A, [usize; 4]>;
+pub type Tensor<A> = TensorData<A, DynDim>;
 
 pub fn mat<A: Clone, const N: usize>(xs: &[[A; N]]) -> Matrix<A> {
     Matrix::from(xs.to_vec())
@@ -131,7 +128,7 @@ impl Drop for SetLenOnDrop<'_> {
     }
 }
 
-pub struct RawTen<P> {
+struct RawTen<P> {
     ptr: NonNull<P>,
     len: usize,
     cap: usize,
@@ -223,6 +220,27 @@ impl<P> RawTen<P> {
     }
 }
 
+pub struct TensorIter<A, D>
+where
+    D: Dimension,
+{
+    r: TenRef<A, D>,
+    index: usize,
+}
+
+impl<A, D> TensorIter<A, D> where D: Dimension {}
+
+impl<A, D> Iterator for TensorIter<A, D>
+where
+    D: Dimension,
+{
+    type Item = A;
+    fn next(&mut self) -> Option<Self::Item> {
+        // self.r.ptr.offset(i);
+        todo!();
+    }
+}
+
 pub struct TenRef<A, D>
 where
     D: Dimension,
@@ -295,6 +313,8 @@ where
     /// 当axis=0时，numpy验证第0维的方向来求和，也就是第一个元素值=D0000+D1000+D2000+D3000=3+0+2+1=6,第二个元素=D0001+D1001+D2001+D3001=5+5+4+3=17，同理可得最后的结果如下：
     /// 当axis=3时，numpy验证第3维的方向来求和，也就是第一个元素值=D0000+D0001+D0002+D0003=3+5+5+0=13,第二个元素=D0010+D0011+D0012+D0013=0+1+2+4=7，同理可得最后的结果如下
     /// ```
+    ///
+    ///
     fn axis_index(&mut self, a: Axis, index: usize) -> TenRef<A, D::AxisDimension>
     where
         D: Dimension,
@@ -330,7 +350,7 @@ where
 
 // impl<A, D> TenRef<A, D> {}
 
-pub struct Tensor<A, D>
+pub struct TensorData<A, D>
 where
     D: Dimension,
 {
@@ -339,11 +359,11 @@ where
     stride: D,
 }
 
-impl<A, D> Tensor<A, D>
+impl<A, D> TensorData<A, D>
 where
     D: Dimension,
 {
-    pub fn from_raw_data(data: RawTen<A>, d: D) -> Self {
+    fn from_raw_data(data: RawTen<A>, d: D) -> Self {
         let stride = d.strides();
         Self {
             data: data,
@@ -412,7 +432,7 @@ where
     }
 }
 
-impl<A: fmt::Debug, D> fmt::Debug for Tensor<A, D>
+impl<A: fmt::Debug, D> fmt::Debug for TensorData<A, D>
 where
     D: Dimension,
 {
@@ -462,6 +482,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_vec() {
+        let mut t = [1, 2, 3];
+        let mut t1 = [1, 2, 3];
+        let a: Vec<u32> = t.iter().zip(t1).map(|(x1, x2)| x1 + x2).collect();
+        println!("a:{:?}", a);
+    }
+
+    #[test]
     fn test_rawten() {
         let mut t = RawTen::<u32>::with_capacity(10);
         t.fill(3, 10);
@@ -490,7 +518,7 @@ mod tests {
         // let b = Vec::new();
         // b.as_ref()
 
-        let a = Tensor::<f64, _>::from_elem(1.0, [4usize, 3, 2]);
+        let a = TensorData::<f64, _>::from_elem(1.0, [4usize, 3, 2]);
         let v = a.slice();
         let t = a.as_ref();
         println!("v:{:?}", v);

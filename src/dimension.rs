@@ -15,8 +15,6 @@ pub trait Dimension: Clone {
 
     fn strides(&self) -> Self;
 
-    fn zero() -> Self;
-
     type AxisDimension: Dimension;
     fn select_axis(&self, a: Axis) -> Self::AxisDimension;
 }
@@ -37,7 +35,7 @@ impl Dimension for [usize; 1] {
 
     // [a, b, c] => strides [b * c, c, 1]
     fn strides(&self) -> [usize; 1] {
-        let mut x = Self::zero();
+        let mut x = [0; 1];
         let s = self.slice().iter().rev();
         let mut prod = 1;
         let mut temp = 1;
@@ -49,29 +47,60 @@ impl Dimension for [usize; 1] {
         x
     }
 
-    fn zero() -> Self {
-        [0; 1]
-    }
-
     fn dim(&self) -> usize {
         self.len()
     }
 }
 
-// macro_rules! select_axis_impl_array {
-//     ($n:expr) => {
-//         impl SelectAxis for [usize; $n] {
-//             type AxisDimension = [usize; $n - 1];
-//             fn select_axis(&self, a: Axis) -> Self::AxisDimension {
-//                 let mut dst = [0; $n - 1];
-//                 let src = self.slice();
-//                 dst[..a.index()].copy_from_slice(&src[..a.index()]);
-//                 dst[a.index()..].copy_from_slice(&src[a.index() + 1..]);
-//                 dst
-//             }
-//         }
-//     };
-// }
+#[derive(Clone)]
+pub struct DynDim {
+    dim: Box<[usize]>,
+}
+
+impl DynDim {
+    fn from(v: Vec<usize>) -> DynDim {
+        Self {
+            dim: v.into_boxed_slice(),
+        }
+    }
+}
+
+impl Dimension for DynDim {
+    type AxisDimension = DynDim;
+    fn select_axis(&self, a: Axis) -> Self::AxisDimension {
+        let mut dst = vec![0; self.dim() - 1];
+        let src = self.slice();
+        dst[..a.index()].copy_from_slice(&src[..a.index()]);
+        dst[a.index()..].copy_from_slice(&src[a.index() + 1..]);
+        DynDim::from(dst)
+    }
+
+    fn slice(&self) -> &[usize] {
+        &self.dim
+    }
+
+    fn size(&self) -> usize {
+        self.slice().iter().fold(1, |s, &a| s * a as usize)
+    }
+
+    // [a, b, c] => strides [b * c, c, 1]
+    fn strides(&self) -> DynDim {
+        let mut x = vec![0; self.dim()];
+        let s = self.slice().iter().rev();
+        let mut prod = 1;
+        let mut temp = 1;
+        for (m, dim) in x.iter_mut().rev().zip(s) {
+            prod *= temp;
+            *m = prod;
+            temp = *dim;
+        }
+        DynDim::from(x)
+    }
+
+    fn dim(&self) -> usize {
+        self.dim.len()
+    }
+}
 
 macro_rules! dimension_impl_array {
     ($n:expr) => {
@@ -95,7 +124,7 @@ macro_rules! dimension_impl_array {
 
             // [a, b, c] => strides [b * c, c, 1]
             fn strides(&self) -> [usize; $n] {
-                let mut x = Self::zero();
+                let mut x = [0; $n];
                 let s = self.slice().iter().rev();
                 let mut prod = 1;
                 let mut temp = 1;
@@ -105,10 +134,6 @@ macro_rules! dimension_impl_array {
                     temp = *dim;
                 }
                 x
-            }
-
-            fn zero() -> Self {
-                [0; $n]
             }
 
             fn dim(&self) -> usize {
@@ -145,10 +170,17 @@ dimension_impl_array!(11);
 mod tests {
     use super::*;
 
-    #[test]
+    #[test] //[3, 2]
     fn test_select_axis() {
-        let d = [4usize, 3, 2];
+        let d = [4usize, 3, 2, 1];
         let d2 = d.select_axis(Axis(0));
         println!("{:?}", d2);
+    }
+
+    #[test]
+    fn test_dyn_dim_select_axis() {
+        let d = DynDim::from(vec![4usize, 3, 2, 1]);
+        let d2 = d.select_axis(Axis(0));
+        println!("{:?}", d2.slice());
     }
 }
