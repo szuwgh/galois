@@ -60,6 +60,10 @@ pub type Ten4<A> = TensorData<A, [usize; 4]>;
 //动态数组
 pub type Tensor<A> = TensorData<A, DynDim>;
 
+impl<A> Tensor<A> {
+    fn from_shape() {}
+}
+
 pub fn mat<A: Clone, const N: usize>(xs: &[[A; N]]) -> Matrix<A> {
     Matrix::from(xs.to_vec())
 }
@@ -399,6 +403,10 @@ where
         }
     }
 
+    pub fn with_shape(v: Vec<A>, d: D) -> Self {
+        Self::from_vec(v, d)
+    }
+
     pub fn from_vec(v: Vec<A>, d: D) -> Self {
         let stride = d.strides();
         Self {
@@ -429,6 +437,21 @@ where
 
     pub fn dim(&self) -> usize {
         self.dim.dim()
+    }
+}
+
+impl<T> Drop for RawTen<T> {
+    fn drop(&mut self) {
+        use alloc::alloc::{dealloc, Layout};
+        let alloc_size = self.cap * core::mem::size_of::<T>();
+        if alloc_size != 0 {
+            unsafe {
+                dealloc(
+                    self.ptr.as_ptr() as *mut u8,
+                    Layout::from_size_align_unchecked(alloc_size, core::mem::align_of::<T>()),
+                );
+            }
+        }
     }
 }
 
