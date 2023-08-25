@@ -1,12 +1,16 @@
+mod broadcast;
 mod dimension;
+mod error;
 mod method;
 mod zip;
+
 extern crate alloc;
 use crate::dimension::{Axis, Dimension, DynDim};
 use core::ptr::{self, NonNull};
 use rawpointer::PointerExt;
 use std::fmt;
 use std::mem::forget;
+
 #[macro_export]
 macro_rules! tensor {
     ($([$([$($x:expr),* $(,)*]),+ $(,)*]),+ $(,)*) => {{
@@ -62,6 +66,21 @@ pub type Tensor<A> = TensorData<A, DynDim>;
 
 impl<A> Tensor<A> {
     fn from_shape() {}
+}
+
+pub fn arr<A: Clone>(xs: &[A]) -> Array<A> {
+    Array::from(xs.to_vec())
+}
+
+impl<A> From<Vec<A>> for Array<A> {
+    fn from(mut xs: Vec<A>) -> Self {
+        let dim = [xs.len()];
+        let ptr = xs.as_mut_ptr();
+        let cap = dim.size();
+        forget(xs);
+        let data = RawTen::from_raw_parts(ptr as *mut A, cap, cap);
+        Array::from_raw_data(data, dim)
+    }
 }
 
 pub fn mat<A: Clone, const N: usize>(xs: &[[A; N]]) -> Matrix<A> {
@@ -173,6 +192,10 @@ impl<P> RawTen<P> {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const P, self.len) }
     }
 
+    fn as_slice_mut(&mut self) -> &mut [P] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut P, self.len) }
+    }
+
     fn take_as_vec(&mut self) -> Vec<P> {
         let capacity = self.cap;
         let len = self.len;
@@ -224,33 +247,43 @@ impl<P> RawTen<P> {
     }
 }
 
-pub struct TensorIter<A, D>
+pub struct TensorIter<'a, A, D>
 where
     D: Dimension,
 {
-    r: TenRef<A, D>,
-    index: usize,
+    r: &'a TenRef<A, D>,
+
+    dim: D,
+    strides: D,
+    index: Option<D>,
 }
 
-impl<A, D> TensorIter<A, D> where D: Dimension {}
-
-impl<A, D> Iterator for TensorIter<A, D>
+impl<'a, A, D> Iterator for TensorIter<'a, A, D>
 where
     D: Dimension,
 {
-    type Item = A;
+    type Item = &'a A;
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        // self.r.ptr.offset(i);
-        todo!();
+        let index = match self.index {
+            None => return None,
+            Some(ref ix) => ix.clone(),
+        };
+        let offset = D::stride_offset(&index, &self.strides);
+        self.index = self.dim.next_for(index);
+        let ptr = unsafe { self.r.ptr.offset(offset) }.as_ptr();
+        unsafe { Some(&*ptr) }
     }
 }
 
+#[derive(Clone)]
 pub struct TenRef<A, D>
 where
     D: Dimension,
 {
     ptr: NonNull<A>,
     len: usize,
+    cap: usize,
     dim: D,
     stride: D,
 }
@@ -267,10 +300,6 @@ where
     /// //               .   \
     /// //                .   axis 1, column 1
     /// //                 axis 1, column 0
-    /// assert!(
-    ///     a.index_axis(Axis(0), 1) == ArrayView::from(&[3., 4.]) &&
-    ///     a.index_axis(Axis(1), 1) == ArrayView::from(&[2., 4., 6.])
-    /// );
     /// ```
     ///```
     ///
@@ -319,28 +348,25 @@ where
     /// ```
     ///
     ///
-    fn axis_index(&mut self, a: Axis, index: usize) -> TenRef<A, D::AxisDimension>
+    fn axis_index(&self, a: Axis, index: usize) -> TenRef<A, D::AxisDimension>
     where
         D: Dimension,
     {
-        let stride = self.stride.slice()[a.index()];
+        let stride = self.stride.as_slice()[a.index()];
         let offset = index * stride;
         let axis_dim = self.dim.select_axis(a);
         let s = axis_dim.strides();
         TenRef {
             ptr: unsafe { self.ptr.offset(offset as isize) },
             len: self.len - offset,
+            cap: self.cap,
             dim: axis_dim,
             stride: s,
         }
     }
 
-    pub fn slice(&self) -> &[A] {
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const A, self.len) }
-    }
-
     pub fn shape(&self) -> &[usize] {
-        self.dim.slice()
+        self.dim.as_slice()
     }
 
     pub fn size(&self) -> usize {
@@ -350,9 +376,42 @@ where
     pub fn dim(&self) -> usize {
         self.dim.dim()
     }
-}
 
-// impl<A, D> TenRef<A, D> {}
+    pub fn iter(&self) -> TensorIter<A, D> {
+        TensorIter {
+            r: self,
+            dim: self.dim.clone(),
+            strides: self.stride.clone(),
+            index: self.dim.first_index(),
+        }
+    }
+
+    fn as_slice(&self) -> &[A] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const A, self.len) }
+    }
+
+    fn as_slice_mut(&mut self) -> &mut [A] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut A, self.len) }
+    }
+
+    pub fn broadcast<E>(&self, d: E)
+    where
+        E: Dimension,
+    {
+    }
+
+    pub fn zip<F>(&mut self, rhs: &TenRef<A, D>, mut f: F)
+    where
+        F: FnMut(&mut A, &A),
+    {
+
+        // let slicel = self.as_slice_mut();
+        // let slicer = rhs.as_slice();
+        // for (s, r) in slicel.iter_mut().zip(slicer) {
+        //     f(s, r);
+        // }
+    }
+}
 
 pub struct TensorData<A, D>
 where
@@ -383,6 +442,7 @@ where
         TenRef {
             ptr: self.data.ptr,
             len: self.data.len,
+            cap: self.data.cap,
             dim: self.dim.clone(),
             stride: self.stride.clone(),
         }
@@ -416,6 +476,14 @@ where
         }
     }
 
+    pub fn as_slice(&self) -> &[A] {
+        self.data.as_slice()
+    }
+
+    pub fn as_slice_mut(&mut self) -> &mut [A] {
+        self.data.as_slice_mut()
+    }
+
     pub fn zeros(d: D) -> Self
     where
         A: Clone + Zero,
@@ -423,12 +491,8 @@ where
         Self::from_elem(A::zero(), d)
     }
 
-    pub fn slice(&self) -> &[A] {
-        self.data.as_slice()
-    }
-
     pub fn shape(&self) -> &[usize] {
-        self.dim.slice()
+        self.dim.as_slice()
     }
 
     pub fn size(&self) -> usize {
@@ -455,17 +519,26 @@ impl<T> Drop for RawTen<T> {
     }
 }
 
+impl<A: fmt::Debug, D> fmt::Debug for TenRef<A, D>
+where
+    D: Dimension,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        format_tensor(self, 0, f)
+    }
+}
+
 impl<A: fmt::Debug, D> fmt::Debug for TensorData<A, D>
 where
     D: Dimension,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        format_tensor(self.as_ref(), 0, f)
+        format_tensor(&self.as_ref(), 0, f)
     }
 }
 
 fn format_tensor<A: fmt::Debug, D>(
-    mut tensor: TenRef<A, D>,
+    tensor: &TenRef<A, D>,
     depth: usize,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result
@@ -475,7 +548,7 @@ where
     match tensor.shape() {
         &[] => {}
         &[len] => {
-            let v = tensor.slice();
+            let v = tensor.as_slice();
             f.write_str("[")?;
             f.write_str(&format!("{:?}", v[0]))?;
             for i in 1..len {
@@ -492,7 +565,7 @@ where
 
             for i in 0..shape[0] {
                 f.write_str(&separator)?;
-                format_tensor(tensor.axis_index(Axis(0), i), depth, f)?;
+                format_tensor(&tensor.axis_index(Axis(0), i), depth, f)?;
             }
             f.write_str("]")?;
         }
@@ -522,16 +595,23 @@ mod tests {
     #[test]
     fn test_mat() {
         let m = mat(&[[1.0, 2.0], [3.0, 4.0]]);
-        let v = m.slice();
-        let t = m.as_ref();
+        let v = m.as_slice();
+        let s = m.stride;
+        {
+            let t = m.as_ref();
+            //let t1 = t.into();
+        }
+        println!("s:{:?}", s);
         println!("v:{:?}", m);
     }
 
     #[test]
     fn test_cude() {
         let m = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
-        let v = m.slice();
-        let t = m.as_ref();
+        let v = m.as_slice();
+        for v in m.as_ref().iter() {
+            println!("t:{:?}", v);
+        }
         println!("v:{:?}", m);
     }
 
@@ -542,7 +622,7 @@ mod tests {
         // b.as_ref()
 
         let a = TensorData::<f64, _>::from_elem(1.0, [4usize, 3, 2]);
-        let v = a.slice();
+        let v = a.as_slice();
         let t = a.as_ref();
         println!("v:{:?}", v);
         // let x = Matrix::<f64>::zeros([2, 3]);
