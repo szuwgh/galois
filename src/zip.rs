@@ -1,11 +1,11 @@
-use crate::{dimension::Dimension, TensorData, TensorIter};
+use crate::{Tensor, TensorIter};
 
-pub struct Zip<'a, A, D: Dimension> {
-    a: TensorIter<'a, A, D>,
-    b: TensorIter<'a, A, D>,
+pub struct Zip<'a, A> {
+    a: TensorIter<'a, A>,
+    b: TensorIter<'a, A>,
 }
 
-impl<'a, A, D: Dimension> Zip<'a, A, D> {
+impl<'a, A> Zip<'a, A> {
     fn map<F>(f: F)
     where
         F: FnMut(&A, &A) -> A,
@@ -13,7 +13,9 @@ impl<'a, A, D: Dimension> Zip<'a, A, D> {
         //  for
     }
 
-    // fn collect() -> TensorData<A, D> {}
+    fn collect() -> Tensor<A> {
+        todo!()
+    }
 }
 
 pub struct Map<I, F> {

@@ -1,9 +1,5 @@
 use super::error::{GError, ShapeErrorKind};
-use crate::{
-    dimension::{Dimension, DynDim},
-    error::GResult,
-    TenRef, Zero,
-};
+use crate::{error::GResult, shape::Shape, TenRef, Zero};
 use std::io::copy;
 
 #[macro_export]
@@ -25,7 +21,7 @@ fn copy_slice<T: Copy>(des: &mut [T], src: &[T]) -> usize {
     l
 }
 
-fn upcast<D: Dimension, E: Dimension>(to: &D, from: &E, stride: &E) -> Option<D> {
+fn upcast(to: &Shape, from: &Shape, stride: &Shape) -> Option<Shape> {
     let mut new_stride = to.clone();
 
     if to.dim() < from.dim() {
@@ -60,21 +56,12 @@ fn upcast<D: Dimension, E: Dimension>(to: &D, from: &E, stride: &E) -> Option<D>
 // 广播主要发生在两种情况，一种情况是如果两个张量的维数不相等，但是它们的后缘维度的轴长相符。所谓后缘维度（trailing dimension）是指，
 // 从末尾开始算起的维度。另外一种情况是，如果两个张量的后缘维度不同，则有一方的长度为1
 // https://numpy.org/doc/stable/user/basics.broadcasting.html#general-broadcasting-rules
-pub fn general_broadcasting<A, D1, D2, Output>(
-    t1: &TenRef<A, D1>,
-    t2: &TenRef<A, D2>,
-) -> GResult<(TenRef<A, Output>, TenRef<A, Output>)>
-where
-    //
-    D1: Dimension,
-    D2: Dimension,
-    Output: Dimension,
-{
+pub fn general_broadcasting<A>(t1: &TenRef<A>, t2: &TenRef<A>) -> GResult<(TenRef<A>, TenRef<A>)> {
     let (d1, d2) = (t1.dim(), t2.dim());
     let k = if d1 > d2 { d1 - d2 } else { d2 - d1 };
     let slice1 = t1.dim.as_slice();
     let slice2 = t2.dim.as_slice();
-    let mut output = Output::zero();
+    let mut output = Shape::zero();
     let output_slice = output.as_slice_mut();
     if copy!(output_slice, slice1) != slice1.len() {
         panic!("copy dimension error");
@@ -117,7 +104,7 @@ where
 }
 
 mod tests {
-    use crate::TensorData;
+    use crate::Tensor;
 
     use super::super::{arr, cube, mat};
     use super::*;
@@ -137,8 +124,7 @@ mod tests {
         println!("m2 dim:{:?}", m2.dim);
         println!("m2 {:?}", m2);
         println!("m2 stride:{:?}", m2.stride);
-        let (out1, out2) =
-            general_broadcasting::<_, _, _, [usize; 2]>(&m1.as_ref(), &m2.as_ref()).unwrap();
+        let (out1, out2) = general_broadcasting::<_>(&m1.as_ref(), &m2.as_ref()).unwrap();
 
         println!("out2:{:?}", out2);
         println!("stride:{:?}", out2.stride);
