@@ -1,9 +1,5 @@
-# galois
-Tensor library for AI, suitable for AI inference engine development
-
-example
-```rust
 use galois::{arr, cube, mat, Shape, Tensor};
+
 fn main() {
     let m1 = mat(&[
         [0.0, 0.0, 0.0],
@@ -28,4 +24,3 @@ fn main() {
     let m3 = &m1 + &m2;
     let m4 = &m1 * &m2;
 }
-```

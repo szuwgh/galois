@@ -1,35 +1,16 @@
 mod broadcast;
 mod error;
 mod method;
-mod shape;
+pub mod shape;
 mod zip;
 
 extern crate alloc;
-use crate::shape::{Axis, Shape};
+pub use crate::shape::{Axis, Shape};
+use crate::zip::Zip;
 use core::ptr::{self, NonNull};
 use rawpointer::PointerExt;
 use std::fmt;
 use std::mem::forget;
-
-// #[macro_export]
-// macro_rules! tensor {
-//     ($([$([$($x:expr),* $(,)*]),+ $(,)*]),+ $(,)*) => {{
-//         $crate::Cube::from(vec![$([$([$($x,)*],)*],)*])
-//     }};
-//     ($([$($x:expr),* $(,)*]),+ $(,)*) => {{
-//         $crate::Matrix::from(vec![$([$($x,)*],)*])
-//     }};
-//     ($($x:expr),* $(,)*) => {{
-//         $crate::Array::from(vec![$($x,)*])
-//     }};
-// }
-
-// #[macro_export]
-// macro_rules! arr {
-//     ($($x:expr),* $(,)*) => {{
-//         $crate::Array::from(vec![$($x,)*])
-//     }};
-// }
 
 pub trait Zero {
     fn zero() -> Self;
@@ -207,7 +188,7 @@ pub struct TensorIter<'a, A> {
 }
 
 impl<'a, A> Iterator for TensorIter<'a, A> {
-    type Item = &'a A;
+    type Item = &'a mut A;
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let index = match self.index {
@@ -217,7 +198,16 @@ impl<'a, A> Iterator for TensorIter<'a, A> {
         let offset = Shape::stride_offset(&index, &self.strides);
         self.index = self.dim.next_for(index);
         let ptr = unsafe { self.ptr.offset(offset) }.as_ptr();
-        unsafe { Some(&*ptr) }
+        unsafe { Some(&mut *ptr) }
+    }
+}
+
+impl<'a, A> TensorIter<'a, A> {
+    fn zip(self, t: TensorIter<'a, A>) -> Zip<'a, A>
+    where
+        Self: Sized,
+    {
+        Zip::new(self, t)
     }
 }
 
@@ -323,6 +313,16 @@ impl<A> TenRef<A> {
         }
     }
 
+    pub fn into_iter<'a>(self) -> TensorIter<'a, A> {
+        TensorIter {
+            ptr: self.ptr,
+            dim: self.dim.clone(),
+            strides: self.stride.clone(),
+            index: self.dim.first_index(),
+            _marker: PhantomData,
+        }
+    }
+
     fn as_slice(&self) -> &[A] {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const A, self.len) }
     }
@@ -332,18 +332,6 @@ impl<A> TenRef<A> {
     }
 
     pub fn broadcast<E>(&self, d: E) {}
-
-    pub fn zip<F>(&mut self, rhs: &TenRef<A>, mut f: F)
-    where
-        F: FnMut(&mut A, &A),
-    {
-
-        // let slicel = self.as_slice_mut();
-        // let slicer = rhs.as_slice();
-        // for (s, r) in slicel.iter_mut().zip(slicer) {
-        //     f(s, r);
-        // }
-    }
 }
 
 #[derive(Clone)]
@@ -356,7 +344,7 @@ pub struct Tensor<A> {
 impl<A> Tensor<A> {
     fn arr(mut xs: Vec<A>) -> Self {
         let dim = [xs.len()];
-        let shape = Shape::from_slice(&dim);
+        let shape = Shape::from_slice(dim);
         let ptr = xs.as_mut_ptr();
         let cap = shape.size();
         forget(xs);
@@ -366,7 +354,7 @@ impl<A> Tensor<A> {
 
     fn mat<const N: usize>(mut xs: Vec<[A; N]>) -> Self {
         let dim = [xs.len(), N];
-        let shape = Shape::from_slice(&dim);
+        let shape = Shape::from_slice(dim);
         let ptr = xs.as_mut_ptr();
         let cap = shape.size();
         forget(xs);
@@ -376,7 +364,7 @@ impl<A> Tensor<A> {
 
     fn cube<const M: usize, const N: usize>(mut xs: Vec<[[A; N]; M]>) -> Self {
         let dim = [xs.len(), N, M];
-        let shape = Shape::from_slice(&dim);
+        let shape = Shape::from_slice(dim);
         let ptr = xs.as_mut_ptr();
         let cap = shape.size();
         forget(xs);
@@ -421,13 +409,15 @@ impl<A> Tensor<A> {
         Self::from_vec(v, d)
     }
 
-    pub fn from_vec(v: Vec<A>, d: Shape) -> Self {
+    fn from_vec(v: Vec<A>, d: Shape) -> Self {
         let stride = d.strides();
-        Self {
+        let t = Self {
             data: RawTen::from_raw_parts(v.as_ptr() as *mut A, v.len(), v.capacity()),
             dim: d,
             stride: stride,
-        }
+        };
+        forget(v);
+        t
     }
 
     pub fn as_slice(&self) -> &[A] {
@@ -455,6 +445,10 @@ impl<A> Tensor<A> {
 
     pub fn dim(&self) -> usize {
         self.dim.dim()
+    }
+
+    pub fn iter(&self) -> TensorIter<'_, A> {
+        self.as_ref().into_iter()
     }
 }
 
@@ -561,7 +555,7 @@ mod tests {
 
     #[test]
     fn test_fmt() {
-        let a = Tensor::<f64>::from_elem(1.0, Shape::from_slice(&[4usize, 3, 2]));
+        let a = Tensor::<f64>::from_elem(1.0, Shape::from_slice([4usize, 3, 2]));
         let v = a.as_slice();
         let t = a.as_ref();
         println!("v:{:?}", v);

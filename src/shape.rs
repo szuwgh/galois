@@ -29,7 +29,7 @@ impl Shape {
         Shape(v.into_boxed_slice())
     }
 
-    pub fn from_slice(v: &[usize]) -> Shape {
+    pub fn from_slice<const N: usize>(v: [usize; N]) -> Shape {
         Shape::from(v.to_vec())
     }
 }
@@ -55,8 +55,8 @@ impl Shape {
         self.as_slice().iter().fold(1, |s, &a| s * a as usize)
     }
 
-    pub fn zero() -> Self {
-        Shape::from(Vec::new())
+    pub fn zero(s: usize) -> Self {
+        Shape::from(vec![0usize; s])
     }
 
     // [a, b, c] => strides [b * c, c, 1]
@@ -79,12 +79,13 @@ impl Shape {
 
     #[inline]
     pub(crate) fn first_index(&self) -> Option<Self> {
-        for ax in self.as_slice().iter() {
+        let slice = self.as_slice();
+        for ax in slice.iter() {
             if *ax == 0 {
                 return None;
             }
         }
-        Some(Self::zero())
+        Some(Self::zero(slice.len()))
     }
 
     #[inline]

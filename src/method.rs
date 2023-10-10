@@ -1,6 +1,5 @@
 use super::broadcast::general_broadcasting;
-use super::shape::Shape;
-use super::{TenRef, Tensor};
+use super::Tensor;
 
 pub trait Distance {}
 
@@ -11,46 +10,208 @@ macro_rules! dim_max {
     };
 }
 
-fn convert_opsf<A: Clone, B: Clone>(f: impl Fn(A, B) -> A) -> impl FnMut(&mut A, &B) {
-    move |x, y| *x = f(x.clone(), y.clone())
+fn convert_iopsf<A: Clone, B: Clone>(f: impl Fn(A, B) -> A) -> impl FnMut((&mut A, &B)) {
+    move |(x, y)| *x = f(x.clone(), y.clone())
 }
 
-impl<A> core::ops::Add<TenRef<A>> for TenRef<A>
-where
-    A: core::ops::Add<A, Output = A> + Clone,
-{
-    type Output = TenRef<A>;
-    fn add(mut self, rhs: TenRef<A>) -> Self::Output {
-        self.zip(&rhs, convert_opsf(A::add));
-        self
-    }
+fn clone_opsf<A: Clone, B: Clone, C>(f: impl Fn(A, B) -> C) -> impl FnMut((&mut A, &B)) -> C {
+    move |(x, y)| f(x.clone(), y.clone())
 }
 
-impl<A> core::ops::Add<&Tensor<A>> for Tensor<A>
-where
-    A: core::ops::Add<A, Output = A> + Clone,
-{
-    type Output = Tensor<A>;
-    fn add(self, rhs: &Tensor<A>) -> Self::Output {
-        //  general_broadcasting::<_, _, _, [usize; 4]>(&self.as_ref(), &m2.as_ref());
-        // let _ = self.as_ref() + rhs.as_ref();
-        // self
-        todo!()
-    }
+macro_rules! impl_binary_op {
+    ($trt:ident, $mth:ident) => {
+        impl<A> std::ops::$trt<&Tensor<A>> for Tensor<A>
+        where
+            A: std::ops::$trt<A, Output = A> + Clone,
+        {
+            type Output = Tensor<A>;
+            fn $mth(self, rhs: &Tensor<A>) -> Self::Output {
+                if self.shape() == rhs.shape() {
+                    self.iter().zip(rhs.iter()).ops(convert_iopsf(A::$mth));
+                    self
+                } else {
+                    let (lhs, rhs2) =
+                        general_broadcasting::<A>(&self.as_ref(), &rhs.as_ref()).unwrap();
+                    if lhs.shape() == self.shape() {
+                        self.iter().zip(rhs2.iter()).ops(convert_iopsf(A::$mth));
+                        self
+                    } else {
+                        lhs.iter()
+                            .zip(rhs2.iter())
+                            .map(clone_opsf(A::$mth))
+                            .collect_tensor(lhs.dim.clone())
+                    }
+                }
+            }
+        }
+
+        impl<A> std::ops::$trt<Tensor<A>> for Tensor<A>
+        where
+            A: std::ops::$trt<A, Output = A> + Clone,
+        {
+            type Output = Tensor<A>;
+            fn $mth(self, rhs: Tensor<A>) -> Self::Output {
+                if self.shape() == rhs.shape() {
+                    self.iter().zip(rhs.iter()).ops(convert_iopsf(A::$mth));
+                    self
+                } else {
+                    let (lhs, rhs2) =
+                        general_broadcasting::<A>(&self.as_ref(), &rhs.as_ref()).unwrap();
+                    if lhs.shape() == self.shape() {
+                        self.iter().zip(rhs2.iter()).ops(convert_iopsf(A::$mth));
+                        self
+                    } else {
+                        lhs.iter()
+                            .zip(rhs2.iter())
+                            .map(clone_opsf(A::$mth))
+                            .collect_tensor(lhs.dim.clone())
+                    }
+                }
+            }
+        }
+
+        impl<A> std::ops::$trt<&Tensor<A>> for &Tensor<A>
+        where
+            A: std::ops::$trt<A, Output = A> + Clone,
+        {
+            type Output = Tensor<A>;
+            fn $mth(self, rhs: &Tensor<A>) -> Self::Output {
+                if self.shape() == rhs.shape() {
+                    self.iter()
+                        .zip(rhs.iter())
+                        .map(clone_opsf(A::$mth))
+                        .collect_tensor(rhs.dim.clone())
+                } else {
+                    let (lhs, rhs2) =
+                        general_broadcasting::<A>(&self.as_ref(), &rhs.as_ref()).unwrap();
+                    lhs.iter()
+                        .zip(rhs2.iter())
+                        .map(clone_opsf(A::$mth))
+                        .collect_tensor(lhs.dim.clone())
+                }
+            }
+        }
+
+        impl<A> std::ops::$trt<Tensor<A>> for &Tensor<A>
+        where
+            A: std::ops::$trt<A, Output = A> + Clone,
+        {
+            type Output = Tensor<A>;
+            fn $mth(self, rhs: Tensor<A>) -> Self::Output {
+                if self.shape() == rhs.shape() {
+                    self.iter()
+                        .zip(rhs.iter())
+                        .map(clone_opsf(A::$mth))
+                        .collect_tensor(rhs.dim.clone())
+                } else {
+                    let (lhs, rhs2) =
+                        general_broadcasting::<A>(&self.as_ref(), &rhs.as_ref()).unwrap();
+                    lhs.iter()
+                        .zip(rhs2.iter())
+                        .map(clone_opsf(A::$mth))
+                        .collect_tensor(lhs.dim.clone())
+                }
+            }
+        }
+    };
 }
+
+impl_binary_op!(Add, add); // +
+impl_binary_op!(Sub, sub); // -
+impl_binary_op!(Mul, mul); // *
+impl_binary_op!(Div, div); // /
+impl_binary_op!(Rem, rem); // %
+impl_binary_op!(BitAnd, bitand); // &
+impl_binary_op!(BitOr, bitor); // |
+impl_binary_op!(BitXor, bitxor); // ^
+impl_binary_op!(Shl, shl); // <<
+impl_binary_op!(Shr, shr); // >>
 
 mod tests {
-    // use super::super::mat;
+    use super::super::{arr, mat};
     use super::*;
     #[test]
     fn test_add() {
-        // let m1 = mat(&[[1.0, 2.0], [3.0, 4.0]]);
-        // let m2 = mat(&[[1.0, 2.0], [3.0, 4.0]]);
-        // let m3 = m1 + &m2;
-        // // println!("m3:{:?}", m1);
-        // println!("m3:{:?}", m3);
-        // let v = m1.as_slice();
-        // let t = m1.as_ref();
-        // println!("v:{:?}", m);
+        let m1 = mat(&[
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0],
+        ]);
+        println!("m1 dim:{:?}", m1.dim);
+        println!("m1 {:?}", m1);
+        println!("m1 stride:{:?}", m1.stride);
+        let m2 = arr(&[1.0, 2.0, 3.0]);
+
+        let m3 = m1 + &m2;
+        println!("m3:{:?}", m3);
+    }
+
+    #[test]
+    fn test_sub() {
+        let m1 = mat(&[
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0],
+        ]);
+        println!("m1 dim:{:?}", m1.dim);
+        println!("m1 {:?}", m1);
+        println!("m1 stride:{:?}", m1.stride);
+        let m2 = arr(&[1.0, 2.0, 3.0]);
+
+        let m3 = &m1 - &m2;
+        println!("m3:{:?}", m3);
+    }
+
+    #[test]
+    fn test_mul() {
+        let m1 = mat(&[
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0],
+        ]);
+        println!("m1 dim:{:?}", m1.dim);
+        println!("m1 {:?}", m1);
+        println!("m1 stride:{:?}", m1.stride);
+        let m2 = arr(&[1.0, 2.0, 3.0]);
+
+        let m3 = m1 * &m2;
+        println!("m3:{:?}", m3);
+    }
+
+    #[test]
+    fn test_div() {
+        let m1 = mat(&[
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0],
+        ]);
+        println!("m1 dim:{:?}", m1.dim);
+        println!("m1 {:?}", m1);
+        println!("m1 stride:{:?}", m1.stride);
+        let m2 = arr(&[1.0, 2.0, 3.0]);
+
+        let m3 = m1 / &m2;
+        println!("m3:{:?}", m3);
+    }
+
+    #[test]
+    fn test_rem() {
+        let m1 = mat(&[
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0],
+        ]);
+        println!("m1 dim:{:?}", m1.dim);
+        println!("m1 {:?}", m1);
+        println!("m1 stride:{:?}", m1.stride);
+        let m2 = arr(&[1.0, 2.0, 3.0]);
+
+        let m3 = m1 % m2;
+        println!("m3:{:?}", m3);
     }
 }

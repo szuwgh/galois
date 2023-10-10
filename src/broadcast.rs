@@ -1,6 +1,5 @@
 use super::error::{GError, ShapeErrorKind};
-use crate::{error::GResult, shape::Shape, TenRef, Zero};
-use std::io::copy;
+use crate::{error::GResult, shape::Shape, TenRef};
 
 #[macro_export]
 macro_rules! copy {
@@ -61,7 +60,7 @@ pub fn general_broadcasting<A>(t1: &TenRef<A>, t2: &TenRef<A>) -> GResult<(TenRe
     let k = if d1 > d2 { d1 - d2 } else { d2 - d1 };
     let slice1 = t1.dim.as_slice();
     let slice2 = t2.dim.as_slice();
-    let mut output = Shape::zero();
+    let mut output = Shape::zero(slice1.len());
     let output_slice = output.as_slice_mut();
     if copy!(output_slice, slice1) != slice1.len() {
         panic!("copy dimension error");
