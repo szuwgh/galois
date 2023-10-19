@@ -344,41 +344,46 @@ pub struct Tensor<A> {
 impl<A> Tensor<A> {
     fn arr(mut xs: Vec<A>) -> Self {
         let dim = [xs.len()];
-        let shape = Shape::from_slice(dim);
+        let shape = Shape::from_array(dim);
         let ptr = xs.as_mut_ptr();
         let cap = shape.size();
         forget(xs);
         let data = RawTen::from_raw_parts(ptr as *mut A, cap, cap);
-        Tensor::from_raw_data(data, shape)
+        Tensor::from_raw(data, shape)
     }
 
     fn mat<const N: usize>(mut xs: Vec<[A; N]>) -> Self {
         let dim = [xs.len(), N];
-        let shape = Shape::from_slice(dim);
+        let shape = Shape::from_array(dim);
         let ptr = xs.as_mut_ptr();
         let cap = shape.size();
         forget(xs);
         let data = RawTen::from_raw_parts(ptr as *mut A, cap, cap);
-        Tensor::from_raw_data(data, shape)
+        Tensor::from_raw(data, shape)
     }
 
     fn cube<const M: usize, const N: usize>(mut xs: Vec<[[A; N]; M]>) -> Self {
         let dim = [xs.len(), N, M];
-        let shape = Shape::from_slice(dim);
+        let shape = Shape::from_array(dim);
         let ptr = xs.as_mut_ptr();
         let cap = shape.size();
         forget(xs);
         let data = RawTen::from_raw_parts(ptr as *mut A, cap, cap);
-        Tensor::from_raw_data(data, shape)
+        Tensor::from_raw(data, shape)
     }
 
-    fn from_raw_data(data: RawTen<A>, s: Shape) -> Self {
+    fn from_raw(data: RawTen<A>, s: Shape) -> Self {
         let stride = s.strides();
         Self {
             data: data,
             dim: s,
             stride: stride,
         }
+    }
+
+    pub fn from_raw_data(ptr: *mut A, length: usize, s: Shape) -> Self {
+        let data = RawTen::from_raw_parts(ptr, length, length);
+        Tensor::from_raw(data, s)
     }
 
     pub fn as_ref<'a>(&'a self) -> TenRef<A> {
@@ -555,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_fmt() {
-        let a = Tensor::<f64>::from_elem(1.0, Shape::from_slice([4usize, 3, 2]));
+        let a = Tensor::<f64>::from_elem(1.0, Shape::from_array([4usize, 3, 2]));
         let v = a.as_slice();
         let t = a.as_ref();
         println!("v:{:?}", v);

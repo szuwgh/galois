@@ -29,7 +29,11 @@ impl Shape {
         Shape(v.into_boxed_slice())
     }
 
-    pub fn from_slice<const N: usize>(v: [usize; N]) -> Shape {
+    pub fn from_array<const N: usize>(v: [usize; N]) -> Shape {
+        Shape::from(v.to_vec())
+    }
+
+    pub fn from_slice(v: &[usize]) -> Shape {
         Shape::from(v.to_vec())
     }
 }
