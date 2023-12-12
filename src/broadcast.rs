@@ -1,5 +1,5 @@
 use super::error::{GError, ShapeErrorKind};
-use crate::{error::GResult, shape::Shape, Tensor};
+use crate::{error::GResult, shape::Shape, DTensor};
 
 #[macro_export]
 macro_rules! copy {
@@ -55,7 +55,10 @@ fn upcast(to: &Shape, from: &Shape, stride: &Shape) -> Option<Shape> {
 // 广播主要发生在两种情况，一种情况是如果两个张量的维数不相等，但是它们的后缘维度的轴长相符。所谓后缘维度（trailing dimension）是指，
 // 从末尾开始算起的维度。另外一种情况是，如果两个张量的后缘维度不同，则有一方的长度为1
 // https://numpy.org/doc/stable/user/basics.broadcasting.html#general-broadcasting-rules
-pub fn general_broadcasting<A>(t1: &Tensor<A>, t2: &Tensor<A>) -> GResult<(Tensor<A>, Tensor<A>)> {
+pub fn general_broadcasting<A>(
+    t1: &DTensor<A>,
+    t2: &DTensor<A>,
+) -> GResult<(DTensor<A>, DTensor<A>)> {
     let (d1, d2) = (t1.dim(), t2.dim());
     let k = if d1 > d2 { d1 - d2 } else { d2 - d1 };
     let slice1 = t1.dim.as_slice();
@@ -85,12 +88,12 @@ pub fn general_broadcasting<A>(t1: &Tensor<A>, t2: &Tensor<A>) -> GResult<(Tenso
     };
 
     Ok((
-        Tensor {
+        DTensor {
             data: t1.data.as_ref(),
             dim: output.clone(),
             stride: broadcast_strides3,
         },
-        Tensor {
+        DTensor {
             data: t2.data.as_ref(),
             dim: output.clone(),
             stride: broadcast_strides4,
@@ -99,7 +102,7 @@ pub fn general_broadcasting<A>(t1: &Tensor<A>, t2: &Tensor<A>) -> GResult<(Tenso
 }
 
 mod tests {
-    use crate::Tensor;
+    use crate::DTensor;
 
     use super::super::{arr, cube, mat};
     use super::*;

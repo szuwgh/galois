@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 rawpointer = { version = "0.2" }
 thiserror = "1.0"
+half = "2.3.1"

@@ -1,5 +1,5 @@
 use super::broadcast::general_broadcasting;
-use super::Tensor;
+use super::DTensor;
 
 pub trait Distance {}
 
@@ -20,12 +20,12 @@ fn clone_opsf<A: Clone, B: Clone, C>(f: impl Fn(A, B) -> C) -> impl FnMut((&mut 
 
 macro_rules! impl_binary_op {
     ($trt:ident, $mth:ident) => {
-        impl<A> std::ops::$trt<&Tensor<A>> for Tensor<A>
+        impl<A> std::ops::$trt<&DTensor<A>> for DTensor<A>
         where
             A: std::ops::$trt<A, Output = A> + Clone,
         {
-            type Output = Tensor<A>;
-            fn $mth(self, rhs: &Tensor<A>) -> Self::Output {
+            type Output = DTensor<A>;
+            fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
                 if self.shape() == rhs.shape() {
                     self.iter().zip(rhs.iter()).ops(convert_iopsf(A::$mth));
                     self
@@ -44,12 +44,12 @@ macro_rules! impl_binary_op {
             }
         }
 
-        impl<A> std::ops::$trt<Tensor<A>> for Tensor<A>
+        impl<A> std::ops::$trt<DTensor<A>> for DTensor<A>
         where
             A: std::ops::$trt<A, Output = A> + Clone,
         {
-            type Output = Tensor<A>;
-            fn $mth(self, rhs: Tensor<A>) -> Self::Output {
+            type Output = DTensor<A>;
+            fn $mth(self, rhs: DTensor<A>) -> Self::Output {
                 if self.shape() == rhs.shape() {
                     self.iter().zip(rhs.iter()).ops(convert_iopsf(A::$mth));
                     self
@@ -68,12 +68,12 @@ macro_rules! impl_binary_op {
             }
         }
 
-        impl<A> std::ops::$trt<&Tensor<A>> for &Tensor<A>
+        impl<A> std::ops::$trt<&DTensor<A>> for &DTensor<A>
         where
             A: std::ops::$trt<A, Output = A> + Clone,
         {
-            type Output = Tensor<A>;
-            fn $mth(self, rhs: &Tensor<A>) -> Self::Output {
+            type Output = DTensor<A>;
+            fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
                 if self.shape() == rhs.shape() {
                     self.iter()
                         .zip(rhs.iter())
@@ -89,12 +89,12 @@ macro_rules! impl_binary_op {
             }
         }
 
-        impl<A> std::ops::$trt<Tensor<A>> for &Tensor<A>
+        impl<A> std::ops::$trt<DTensor<A>> for &DTensor<A>
         where
             A: std::ops::$trt<A, Output = A> + Clone,
         {
-            type Output = Tensor<A>;
-            fn $mth(self, rhs: Tensor<A>) -> Self::Output {
+            type Output = DTensor<A>;
+            fn $mth(self, rhs: DTensor<A>) -> Self::Output {
                 if self.shape() == rhs.shape() {
                     self.iter()
                         .zip(rhs.iter())
@@ -112,11 +112,11 @@ macro_rules! impl_binary_op {
     };
 }
 
-impl<A> PartialEq<Tensor<A>> for Tensor<A>
+impl<A> PartialEq<DTensor<A>> for DTensor<A>
 where
     A: PartialEq,
 {
-    fn eq(&self, other: &Tensor<A>) -> bool {
+    fn eq(&self, other: &DTensor<A>) -> bool {
         if self.shape() != other.shape() {
             return false;
         }
