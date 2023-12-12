@@ -30,8 +30,7 @@ macro_rules! impl_binary_op {
                     self.iter().zip(rhs.iter()).ops(convert_iopsf(A::$mth));
                     self
                 } else {
-                    let (lhs, rhs2) =
-                        general_broadcasting::<A>(&self.as_ref(), &rhs.as_ref()).unwrap();
+                    let (lhs, rhs2) = general_broadcasting::<A>(&self, rhs).unwrap();
                     if lhs.shape() == self.shape() {
                         self.iter().zip(rhs2.iter()).ops(convert_iopsf(A::$mth));
                         self
@@ -55,8 +54,7 @@ macro_rules! impl_binary_op {
                     self.iter().zip(rhs.iter()).ops(convert_iopsf(A::$mth));
                     self
                 } else {
-                    let (lhs, rhs2) =
-                        general_broadcasting::<A>(&self.as_ref(), &rhs.as_ref()).unwrap();
+                    let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
                     if lhs.shape() == self.shape() {
                         self.iter().zip(rhs2.iter()).ops(convert_iopsf(A::$mth));
                         self
@@ -82,8 +80,7 @@ macro_rules! impl_binary_op {
                         .map(clone_opsf(A::$mth))
                         .collect_tensor(rhs.dim.clone())
                 } else {
-                    let (lhs, rhs2) =
-                        general_broadcasting::<A>(&self.as_ref(), &rhs.as_ref()).unwrap();
+                    let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
                     lhs.iter()
                         .zip(rhs2.iter())
                         .map(clone_opsf(A::$mth))
@@ -104,8 +101,7 @@ macro_rules! impl_binary_op {
                         .map(clone_opsf(A::$mth))
                         .collect_tensor(rhs.dim.clone())
                 } else {
-                    let (lhs, rhs2) =
-                        general_broadcasting::<A>(&self.as_ref(), &rhs.as_ref()).unwrap();
+                    let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
                     lhs.iter()
                         .zip(rhs2.iter())
                         .map(clone_opsf(A::$mth))
@@ -114,6 +110,18 @@ macro_rules! impl_binary_op {
             }
         }
     };
+}
+
+impl<A> PartialEq<Tensor<A>> for Tensor<A>
+where
+    A: PartialEq,
+{
+    fn eq(&self, other: &Tensor<A>) -> bool {
+        if self.shape() != other.shape() {
+            return false;
+        }
+        return self.as_slice() == other.as_slice();
+    }
 }
 
 impl_binary_op!(Add, add); // +
@@ -156,7 +164,7 @@ mod tests {
             [3.0, 3.0, 3.0],
         ]);
         println!("m1 dim:{:?}", m1.dim);
-        println!("m1 {:?}", m1);
+        println!("m1 {:?}", m1.as_slice());
         println!("m1 stride:{:?}", m1.stride);
         let m2 = arr(&[1.0, 2.0, 3.0]);
 
@@ -213,5 +221,25 @@ mod tests {
 
         let m3 = m1 % m2;
         println!("m3:{:?}", m3);
+    }
+
+    #[test]
+    fn test_eq() {
+        let m1 = mat(&[
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0],
+        ]);
+        let m2 = mat(&[
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0],
+        ]);
+        let m3 = arr(&[1.0, 2.0, 3.0]);
+
+        println!("{}", m1 == m2);
+        println!("{}", m2 == m3);
     }
 }

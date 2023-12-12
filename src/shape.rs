@@ -25,16 +25,16 @@ pub fn stride_offset(n: usize, stride: usize) -> isize {
 pub struct Shape(Box<[usize]>);
 
 impl Shape {
-    pub fn from(v: Vec<usize>) -> Shape {
+    pub fn from_vec(v: Vec<usize>) -> Shape {
         Shape(v.into_boxed_slice())
     }
 
     pub fn from_array<const N: usize>(v: [usize; N]) -> Shape {
-        Shape::from(v.to_vec())
+        Shape::from_vec(v.to_vec())
     }
 
     pub fn from_slice(v: &[usize]) -> Shape {
-        Shape::from(v.to_vec())
+        Shape::from_vec(v.to_vec())
     }
 }
 
@@ -44,7 +44,7 @@ impl Shape {
         let src = self.as_slice();
         dst[..a.index()].copy_from_slice(&src[..a.index()]);
         dst[a.index()..].copy_from_slice(&src[a.index() + 1..]);
-        Shape::from(dst)
+        Shape::from_vec(dst)
     }
 
     pub fn as_slice(&self) -> &[usize] {
@@ -60,7 +60,7 @@ impl Shape {
     }
 
     pub fn zero(s: usize) -> Self {
-        Shape::from(vec![0usize; s])
+        Shape::from_vec(vec![0usize; s])
     }
 
     // [a, b, c] => strides [b * c, c, 1]
@@ -74,7 +74,7 @@ impl Shape {
             *m = prod;
             temp = *dim;
         }
-        Shape::from(x)
+        Shape::from_vec(x)
     }
 
     pub fn dim(&self) -> usize {
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_dyn_dim_select_axis() {
-        let d = Shape::from(vec![4usize, 3, 2, 1]);
+        let d = Shape::from_vec(vec![4usize, 3, 2, 1]);
         let d2 = d.select_axis(Axis(0));
         println!("{:?}", d2.as_slice());
     }
