@@ -1,3 +1,4 @@
+#![feature(concat_idents)]
 mod broadcast;
 mod error;
 mod method;
@@ -6,16 +7,22 @@ pub mod shape;
 mod simd;
 mod zip;
 extern crate alloc;
+use crate::shape::Dim;
 pub use crate::shape::{Axis, Shape};
 use crate::zip::Zip;
-use core::ptr::{self, NonNull};
 
+use core::ptr::{self, NonNull};
 use rawpointer::PointerExt;
 use std::fmt;
 use std::mem::forget;
 mod tensor;
+use half::f16;
+pub use tensor::DType;
+pub use tensor::Tensor;
+pub use tensor::TensorValue;
+pub trait TensorType: Zero + std::cmp::PartialOrd + fmt::Debug + PartialEq {}
 
-pub trait Zero {
+pub trait Zero: Clone {
     fn zero() -> Self;
 }
 
@@ -30,18 +37,27 @@ macro_rules! zero_impl {
     };
 }
 
+zero_impl!(u8, 0);
+zero_impl!(u16, 0);
+zero_impl!(u32, 0);
+zero_impl!(u64, 0);
+zero_impl!(i8, 0);
+zero_impl!(i16, 0);
+zero_impl!(i32, 0);
+zero_impl!(i64, 0);
+zero_impl!(f16, f16::from_f32(0.0));
 zero_impl!(f32, 0.0);
 zero_impl!(f64, 0.0);
 
-pub fn arr<A: Clone>(xs: &[A]) -> DTensor<A> {
+pub fn arr<A: TensorType>(xs: &[A]) -> DTensor<A> {
     DTensor::arr(xs.to_vec())
 }
 
-pub fn mat<A: Clone, const N: usize>(xs: &[[A; N]]) -> DTensor<A> {
+pub fn mat<A: TensorType, const N: usize>(xs: &[[A; N]]) -> DTensor<A> {
     DTensor::mat(xs.to_vec())
 }
 
-pub fn cube<A: Clone, const N: usize, const M: usize>(xs: &[[[A; N]; M]]) -> DTensor<A> {
+pub fn cube<A: TensorType, const N: usize, const M: usize>(xs: &[[[A; N]; M]]) -> DTensor<A> {
     DTensor::cube(xs.to_vec())
 }
 
@@ -194,11 +210,11 @@ impl<P> RawPtr<P> {
         unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut P, self.len) }
     }
 
-    fn take_as_vec(&mut self) -> Vec<P> {
+    fn take_as_vec(self) -> Vec<P> {
         let capacity = self.cap;
         let len = self.len;
-        self.len = 0;
-        self.cap = 0;
+        // self.len = 0;
+        // self.cap = 0;
         unsafe { Vec::from_raw_parts(self.ptr.as_ptr(), len, capacity) }
     }
 
@@ -250,7 +266,7 @@ use std::marker::PhantomData;
 pub struct DTensorIter<'a, A> {
     ptr: NonNull<A>,
     dim: Shape,
-    strides: Shape,
+    strides: Box<[usize]>,
     index: Option<Shape>,
     _marker: PhantomData<&'a A>,
 }
@@ -270,53 +286,15 @@ impl<'a, A> Iterator for DTensorIter<'a, A> {
     }
 }
 
-impl<'a, A> DTensorIter<'a, A> {
+impl<'a, A> DTensorIter<'a, A>
+where
+    A: TensorType,
+{
     fn zip(self, t: DTensorIter<'a, A>) -> Zip<'a, A>
     where
         Self: Sized,
     {
         Zip::new(self, t)
-    }
-}
-
-impl<A> DTensor<A> {
-    ///
-    fn axis_index(&self, a: Axis, index: usize) -> DTensor<A> {
-        let stride = self.stride.as_slice()[a.index()];
-        let offset = index * stride;
-
-        let axis_dim = self.dim.select_axis(a);
-        let s = axis_dim.strides();
-
-        let raw_ref = RawRef {
-            ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
-            len: self.data.len() - offset,
-        };
-        DTensor {
-            data: MemoryDevice::Cpu(RawData::Ref(raw_ref)),
-            dim: axis_dim,
-            stride: s,
-        }
-    }
-
-    pub fn iter(&self) -> DTensorIter<'_, A> {
-        DTensorIter {
-            ptr: self.data.as_ptr(),
-            dim: self.dim.clone(),
-            strides: self.stride.clone(),
-            index: self.dim.first_index(),
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn into_iter<'a>(self) -> DTensorIter<'a, A> {
-        DTensorIter {
-            ptr: self.data.as_ptr(),
-            dim: self.dim.clone(),
-            strides: self.stride.clone(),
-            index: self.dim.first_index(),
-            _marker: PhantomData,
-        }
     }
 }
 
@@ -374,13 +352,18 @@ impl<A> MemoryDevice<A> {
 }
 
 #[derive(Clone)]
-pub struct DTensor<A> {
+pub struct DTensor<A>
+where
+    A: TensorType,
+{
     data: MemoryDevice<A>,
-    dim: Shape,
-    stride: Shape,
+    dim: Dim,
 }
 
-impl<A> DTensor<A> {
+impl<A> DTensor<A>
+where
+    A: TensorType,
+{
     fn arr(mut xs: Vec<A>) -> Self {
         let dim = [xs.len()];
         let shape = Shape::from_array(dim);
@@ -415,8 +398,7 @@ impl<A> DTensor<A> {
         let stride = s.strides();
         Self {
             data: MemoryDevice::Cpu(RawData::Own(data)),
-            dim: s,
-            stride: stride,
+            dim: Dim { s, stride },
         }
     }
 
@@ -429,7 +411,6 @@ impl<A> DTensor<A> {
         DTensor {
             data: self.data.as_ref(),
             dim: self.dim.clone(),
-            stride: self.stride.clone(),
         }
     }
 
@@ -442,27 +423,25 @@ impl<A> DTensor<A> {
         let stride = s.strides();
         Self {
             data: MemoryDevice::Cpu(RawData::Own(v)),
-            dim: s,
-            stride: stride,
+            dim: Dim { s, stride },
         }
     }
 
-    pub fn reshape(&self, d: Shape) -> DTensor<A>
+    pub fn reshape(&self, s: Shape) -> DTensor<A>
     where
         A: Clone,
     {
-        if self.dim.size() != d.size() {
+        if self.dim.shape().size() != s.size() {
             panic!(
                 "ndarray: incompatible shapes in reshape, attempted from: {:?}, to: {:?}",
-                self.dim.as_slice(),
-                d.as_slice()
+                self.dim.shape().as_slice(),
+                s.as_slice()
             )
         }
-        let stride = d.strides();
+        let stride = s.strides();
         DTensor {
             data: self.data.as_ref(),
-            dim: d,
-            stride: stride,
+            dim: Dim { s, stride },
         }
     }
 
@@ -470,16 +449,15 @@ impl<A> DTensor<A> {
         Self::from_vec(v, d)
     }
 
-    fn from_vec(v: Vec<A>, d: Shape) -> Self {
-        let stride = d.strides();
+    fn from_vec(v: Vec<A>, s: Shape) -> Self {
+        let stride = s.strides();
         let t = Self {
             data: MemoryDevice::Cpu(RawData::Own(RawPtr::from_raw_parts(
                 v.as_ptr() as *mut A,
                 v.len(),
                 v.capacity(),
             ))),
-            dim: d,
-            stride: stride,
+            dim: Dim { s, stride },
         };
         forget(v);
         t
@@ -493,23 +471,60 @@ impl<A> DTensor<A> {
         self.data.as_slice_mut()
     }
 
-    pub fn zeros(d: Shape) -> Self
-    where
-        A: Clone + Zero,
-    {
+    pub fn zeros(d: Shape) -> Self {
         Self::from_elem(A::zero(), d)
     }
 
-    pub fn shape(&self) -> &[usize] {
-        self.dim.as_slice()
+    pub fn shape(&self) -> &Shape {
+        &self.dim.shape()
     }
 
     pub fn size(&self) -> usize {
-        self.dim.size()
+        self.dim.shape().dim()
     }
 
-    pub fn dim(&self) -> usize {
-        self.dim.dim()
+    pub fn dim(&self) -> &Dim {
+        &self.dim
+    }
+
+    fn axis_index(&self, a: Axis, index: usize) -> DTensor<A> {
+        let stride = self.dim.stride[a.index()];
+        let offset = index * stride;
+
+        let axis_dim = self.dim.shape().select_axis(a);
+        let s = axis_dim.strides();
+
+        let raw_ref = RawRef {
+            ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
+            len: self.data.len() - offset,
+        };
+        DTensor {
+            data: MemoryDevice::Cpu(RawData::Ref(raw_ref)),
+            dim: Dim {
+                s: axis_dim,
+                stride: s,
+            },
+        }
+    }
+
+    pub fn iter(&self) -> DTensorIter<'_, A> {
+        DTensorIter {
+            ptr: self.data.as_ptr(),
+            dim: self.dim.s.clone(),
+            strides: self.dim.stride.clone(),
+            index: self.dim.shape().first_index(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn into_iter<'a>(self) -> DTensorIter<'a, A> {
+        DTensorIter {
+            ptr: self.data.as_ptr(),
+            dim: self.dim.s.clone(),
+            strides: self.dim.stride.clone(),
+            index: self.dim.s.first_index(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -537,18 +552,18 @@ impl<T> Drop for RawPtr<T> {
     }
 }
 
-impl<A: fmt::Debug> fmt::Debug for DTensor<A> {
+impl<A: TensorType> fmt::Debug for DTensor<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         format_tensor(self, 0, f)
     }
 }
 
-fn format_tensor<A: fmt::Debug>(
+fn format_tensor<A: TensorType>(
     tensor: &DTensor<A>,
     depth: usize,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
-    match tensor.shape() {
+    match tensor.shape().as_slice() {
         &[] => {}
         &[len] => {
             let v = tensor.as_slice();
@@ -599,7 +614,7 @@ mod tests {
     fn test_mat() {
         let m = mat(&[[1.0, 2.0], [3.0, 4.0]]);
         let v = m.as_slice();
-        let s = &m.stride;
+        let s = &m.dim.stride;
         {
             let t = m.as_ref();
         }

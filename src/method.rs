@@ -1,5 +1,6 @@
 use super::broadcast::general_broadcasting;
 use super::DTensor;
+use crate::TensorType;
 
 pub trait Distance {}
 
@@ -22,7 +23,7 @@ macro_rules! impl_binary_op {
     ($trt:ident, $mth:ident) => {
         impl<A> std::ops::$trt<&DTensor<A>> for DTensor<A>
         where
-            A: std::ops::$trt<A, Output = A> + Clone,
+            A: std::ops::$trt<A, Output = A> + TensorType,
         {
             type Output = DTensor<A>;
             fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
@@ -38,7 +39,7 @@ macro_rules! impl_binary_op {
                         lhs.iter()
                             .zip(rhs2.iter())
                             .map(clone_opsf(A::$mth))
-                            .collect_tensor(lhs.dim.clone())
+                            .collect_tensor(lhs.dim.shape().clone())
                     }
                 }
             }
@@ -46,7 +47,7 @@ macro_rules! impl_binary_op {
 
         impl<A> std::ops::$trt<DTensor<A>> for DTensor<A>
         where
-            A: std::ops::$trt<A, Output = A> + Clone,
+            A: std::ops::$trt<A, Output = A> + TensorType,
         {
             type Output = DTensor<A>;
             fn $mth(self, rhs: DTensor<A>) -> Self::Output {
@@ -62,7 +63,7 @@ macro_rules! impl_binary_op {
                         lhs.iter()
                             .zip(rhs2.iter())
                             .map(clone_opsf(A::$mth))
-                            .collect_tensor(lhs.dim.clone())
+                            .collect_tensor(lhs.dim.shape().clone())
                     }
                 }
             }
@@ -70,7 +71,7 @@ macro_rules! impl_binary_op {
 
         impl<A> std::ops::$trt<&DTensor<A>> for &DTensor<A>
         where
-            A: std::ops::$trt<A, Output = A> + Clone,
+            A: std::ops::$trt<A, Output = A> + TensorType,
         {
             type Output = DTensor<A>;
             fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
@@ -78,20 +79,20 @@ macro_rules! impl_binary_op {
                     self.iter()
                         .zip(rhs.iter())
                         .map(clone_opsf(A::$mth))
-                        .collect_tensor(rhs.dim.clone())
+                        .collect_tensor(rhs.dim.shape().clone())
                 } else {
                     let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
                     lhs.iter()
                         .zip(rhs2.iter())
                         .map(clone_opsf(A::$mth))
-                        .collect_tensor(lhs.dim.clone())
+                        .collect_tensor(lhs.dim.shape().clone())
                 }
             }
         }
 
         impl<A> std::ops::$trt<DTensor<A>> for &DTensor<A>
         where
-            A: std::ops::$trt<A, Output = A> + Clone,
+            A: std::ops::$trt<A, Output = A> + TensorType,
         {
             type Output = DTensor<A>;
             fn $mth(self, rhs: DTensor<A>) -> Self::Output {
@@ -99,13 +100,13 @@ macro_rules! impl_binary_op {
                     self.iter()
                         .zip(rhs.iter())
                         .map(clone_opsf(A::$mth))
-                        .collect_tensor(rhs.dim.clone())
+                        .collect_tensor(rhs.dim.shape().clone())
                 } else {
                     let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
                     lhs.iter()
                         .zip(rhs2.iter())
                         .map(clone_opsf(A::$mth))
-                        .collect_tensor(lhs.dim.clone())
+                        .collect_tensor(lhs.dim.shape().clone())
                 }
             }
         }
@@ -114,7 +115,7 @@ macro_rules! impl_binary_op {
 
 impl<A> PartialEq<DTensor<A>> for DTensor<A>
 where
-    A: PartialEq,
+    A: TensorType,
 {
     fn eq(&self, other: &DTensor<A>) -> bool {
         if self.shape() != other.shape() {
@@ -148,7 +149,7 @@ mod tests {
         ]);
         println!("m1 dim:{:?}", m1.dim);
         println!("m1 {:?}", m1);
-        println!("m1 stride:{:?}", m1.stride);
+        println!("m1 stride:{:?}", m1.dim.stride);
         let m2 = arr(&[1.0, 2.0, 3.0]);
 
         let m3 = m1 + &m2;
@@ -165,7 +166,7 @@ mod tests {
         ]);
         println!("m1 dim:{:?}", m1.dim);
         println!("m1 {:?}", m1.as_slice());
-        println!("m1 stride:{:?}", m1.stride);
+        println!("m1 stride:{:?}", m1.dim.stride);
         let m2 = arr(&[1.0, 2.0, 3.0]);
 
         let m3 = &m1 - &m2;
@@ -182,7 +183,7 @@ mod tests {
         ]);
         println!("m1 dim:{:?}", m1.dim);
         println!("m1 {:?}", m1);
-        println!("m1 stride:{:?}", m1.stride);
+        println!("m1 stride:{:?}", m1.dim.stride);
         let m2 = arr(&[1.0, 2.0, 3.0]);
 
         let m3 = m1 * &m2;
@@ -199,7 +200,7 @@ mod tests {
         ]);
         println!("m1 dim:{:?}", m1.dim);
         println!("m1 {:?}", m1);
-        println!("m1 stride:{:?}", m1.stride);
+        println!("m1 stride:{:?}", m1.dim.stride);
         let m2 = arr(&[1.0, 2.0, 3.0]);
 
         let m3 = m1 / &m2;
@@ -216,7 +217,7 @@ mod tests {
         ]);
         println!("m1 dim:{:?}", m1.dim);
         println!("m1 {:?}", m1);
-        println!("m1 stride:{:?}", m1.stride);
+        println!("m1 stride:{:?}", m1.dim.stride);
         let m2 = arr(&[1.0, 2.0, 3.0]);
 
         let m3 = m1 % m2;

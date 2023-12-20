@@ -1,12 +1,18 @@
-use crate::Shape;
 use crate::{DTensor, DTensorIter};
+use crate::{Shape, TensorType};
 
-pub struct Zip<'a, A> {
+pub struct Zip<'a, A>
+where
+    A: TensorType,
+{
     a: DTensorIter<'a, A>,
     b: DTensorIter<'a, A>,
 }
 
-impl<'a, A> Zip<'a, A> {
+impl<'a, A> Zip<'a, A>
+where
+    A: TensorType,
+{
     pub fn new(a: DTensorIter<'a, A>, b: DTensorIter<'a, A>) -> Zip<'a, A> {
         Self { a: a, b: b }
     }
@@ -28,7 +34,10 @@ impl<'a, A> Zip<'a, A> {
     }
 }
 
-impl<'a, A> Iterator for Zip<'a, A> {
+impl<'a, A> Iterator for Zip<'a, A>
+where
+    A: TensorType,
+{
     type Item = (&'a mut A, &'a A);
 
     #[inline]
@@ -44,7 +53,7 @@ pub struct Map<I, F> {
     f: F,
 }
 
-impl<B, I: Iterator, F> Map<I, F>
+impl<B: TensorType, I: Iterator, F> Map<I, F>
 where
     F: FnMut(I::Item) -> B,
 {
@@ -105,8 +114,7 @@ mod tests {
 
         m1.as_ref()
             .iter()
-            .zip(m1.as_ref().iter())
-            .map(|(t1, t2)| *t1 * t2);
+            .for_each(|x| if *x > 1.0 { *x = 1.0 } else { *x = 0.0 });
 
         println!("m3:{:?}", m1);
     }

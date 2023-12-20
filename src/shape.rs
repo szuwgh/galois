@@ -22,7 +22,23 @@ pub fn stride_offset(n: usize, stride: usize) -> isize {
 }
 
 #[derive(Clone, Debug)]
-pub struct Shape(Box<[usize]>);
+pub struct Dim {
+    pub(crate) s: Shape,
+    pub(crate) stride: Box<[usize]>,
+}
+
+impl Dim {
+    pub fn shape(&self) -> &Shape {
+        &self.s
+    }
+
+    pub fn stride(&self) -> &[usize] {
+        &self.stride
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Shape(pub(crate) Box<[usize]>);
 
 impl Shape {
     pub fn from_vec(v: Vec<usize>) -> Shape {
@@ -35,6 +51,20 @@ impl Shape {
 
     pub fn from_slice(v: &[usize]) -> Shape {
         Shape::from_vec(v.to_vec())
+    }
+
+    pub fn dim4(&self) -> (usize, usize, usize, usize) {
+        assert!(self.0.len() == 4);
+        (self.0[0], self.0[1], self.0[2], self.0[3])
+    }
+}
+
+impl PartialEq<Shape> for Shape {
+    fn eq(&self, other: &Shape) -> bool {
+        // if self.dim() != other.dim() {
+        //     return false;
+        // }
+        return self.as_slice() == other.as_slice();
     }
 }
 
@@ -64,7 +94,7 @@ impl Shape {
     }
 
     // [a, b, c] => strides [b * c, c, 1]
-    pub fn strides(&self) -> Shape {
+    pub fn strides(&self) -> Box<[usize]> {
         let mut x = vec![0; self.dim()];
         let s = self.as_slice().iter().rev();
         let mut prod = 1;
@@ -74,7 +104,7 @@ impl Shape {
             *m = prod;
             temp = *dim;
         }
-        Shape::from_vec(x)
+        x.into_boxed_slice()
     }
 
     pub fn dim(&self) -> usize {
@@ -113,9 +143,9 @@ impl Shape {
     }
 
     #[inline]
-    pub(crate) fn stride_offset(index: &Self, strides: &Self) -> isize {
+    pub(crate) fn stride_offset(index: &Self, strides: &[usize]) -> isize {
         let mut offset = 0;
-        for (&i, &s) in index.as_slice().iter().zip(strides.as_slice().iter()) {
+        for (&i, &s) in index.as_slice().iter().zip(strides.iter()) {
             offset += stride_offset(i, s);
         }
         offset

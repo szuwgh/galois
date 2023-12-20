@@ -1,6 +1,7 @@
 use super::error::{GError, ShapeErrorKind};
+use crate::shape::Dim;
+use crate::TensorType;
 use crate::{error::GResult, shape::Shape, DTensor};
-
 #[macro_export]
 macro_rules! copy {
     ($des:expr, $src:expr) => {
@@ -20,20 +21,20 @@ fn copy_slice<T: Copy>(des: &mut [T], src: &[T]) -> usize {
     l
 }
 
-fn upcast(to: &Shape, from: &Shape, stride: &Shape) -> Option<Shape> {
-    let mut new_stride = to.clone();
+fn upcast(to: &Shape, from: &Shape, stride: &[usize]) -> Option<Box<[usize]>> {
+    let mut new_stride = to.0.clone();
 
     if to.dim() < from.dim() {
         return None;
     }
 
     {
-        let mut new_stride_iter = new_stride.as_slice_mut().iter_mut().rev();
+        let mut new_stride_iter = new_stride.iter_mut().rev();
         for ((er, es), dr) in from
             .as_slice()
             .iter()
             .rev()
-            .zip(stride.as_slice().iter().rev())
+            .zip(stride.iter().rev())
             .zip(new_stride_iter.by_ref())
         {
             if *dr == *er {
@@ -58,11 +59,14 @@ fn upcast(to: &Shape, from: &Shape, stride: &Shape) -> Option<Shape> {
 pub fn general_broadcasting<A>(
     t1: &DTensor<A>,
     t2: &DTensor<A>,
-) -> GResult<(DTensor<A>, DTensor<A>)> {
-    let (d1, d2) = (t1.dim(), t2.dim());
+) -> GResult<(DTensor<A>, DTensor<A>)>
+where
+    A: TensorType,
+{
+    let (d1, d2) = (t1.size(), t2.size());
     let k = if d1 > d2 { d1 - d2 } else { d2 - d1 };
-    let slice1 = t1.dim.as_slice();
-    let slice2 = t2.dim.as_slice();
+    let slice1 = t1.dim.shape().as_slice();
+    let slice2 = t2.dim.shape().as_slice();
     let mut output = Shape::zero(slice1.len());
     let output_slice = output.as_slice_mut();
     if copy!(output_slice, slice1) != slice1.len() {
@@ -77,12 +81,12 @@ pub fn general_broadcasting<A>(
             }
         }
     }
-    let broadcast_strides3 = match upcast(&output, &t1.dim, &t1.stride) {
+    let broadcast_strides3 = match upcast(&output, &t1.dim.shape(), &t1.dim.stride()) {
         Some(st) => st,
         None => return Err(GError::ShapeError(ShapeErrorKind::IncompatibleShape)),
     };
 
-    let broadcast_strides4 = match upcast(&output, &t2.dim, &t2.stride) {
+    let broadcast_strides4 = match upcast(&output, &t2.dim.shape(), &t2.dim.stride) {
         Some(st) => st,
         None => return Err(GError::ShapeError(ShapeErrorKind::IncompatibleShape)),
     };
@@ -90,13 +94,17 @@ pub fn general_broadcasting<A>(
     Ok((
         DTensor {
             data: t1.data.as_ref(),
-            dim: output.clone(),
-            stride: broadcast_strides3,
+            dim: Dim {
+                s: output.clone(),
+                stride: broadcast_strides3,
+            },
         },
         DTensor {
             data: t2.data.as_ref(),
-            dim: output.clone(),
-            stride: broadcast_strides4,
+            dim: Dim {
+                s: output.clone(),
+                stride: broadcast_strides4,
+            },
         },
     ))
 }
@@ -117,15 +125,15 @@ mod tests {
         ]);
         println!("m1 dim:{:?}", m1.dim);
         println!("m1 {:?}", m1);
-        println!("m1 stride:{:?}", m1.stride);
+        println!("m1 stride:{:?}", m1.dim.stride);
         let m2 = arr(&[1.0, 2.0, 3.0]);
         println!("m2 dim:{:?}", m2.dim);
         println!("m2 {:?}", m2);
-        println!("m2 stride:{:?}", m2.stride);
+        println!("m2 stride:{:?}", m2.dim.stride);
         let (out1, out2) = general_broadcasting::<_>(&m1.as_ref(), &m2.as_ref()).unwrap();
 
         println!("out2:{:?}", out2);
-        println!("stride:{:?}", out2.stride);
+        println!("stride:{:?}", out2.dim.stride);
 
         for i in out2.iter() {
             println!("i:{}", *i);
