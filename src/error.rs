@@ -1,3 +1,4 @@
+use crate::Shape;
 use std::io;
 use std::io::Error as IOError;
 use thiserror::Error;
@@ -18,6 +19,20 @@ pub enum GError {
     UnexpectIO(String, io::Error),
     #[error("Unexpected: {0}")]
     Unexpected(String),
+    // === Dimension Index Errors ===
+    #[error("{op}: dimension index {dim} out of range for shape {shape:?}")]
+    DimOutOfRange {
+        shape: Shape,
+        dim: usize,
+        op: &'static str,
+    },
+    // === Shape Errors ===
+    #[error("unexpected rank, expected: {expected}, got: {got} ({shape:?})")]
+    UnexpectedNumberOfDims {
+        expected: usize,
+        got: usize,
+        shape: Shape,
+    },
 }
 
 impl From<&str> for GError {

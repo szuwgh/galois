@@ -7,10 +7,11 @@ pub mod shape;
 mod simd;
 mod zip;
 extern crate alloc;
+
+use crate::error::{GError, GResult};
 use crate::shape::Dim;
 pub use crate::shape::{Axis, Shape};
 use crate::zip::Zip;
-
 use core::ptr::{self, NonNull};
 use rawpointer::PointerExt;
 use std::fmt;
@@ -20,7 +21,17 @@ use half::f16;
 pub use tensor::DType;
 pub use tensor::Tensor;
 pub use tensor::TensorValue;
-pub trait TensorType: Zero + std::cmp::PartialOrd + fmt::Debug + PartialEq {}
+pub trait TensorType:
+    std::cmp::PartialOrd + fmt::Debug + PartialEq + Copy + num_traits::NumAssign + Sync + Send
+{
+    #[inline(always)]
+    unsafe fn vec_dot(lhs: *const Self, rhs: *const Self, res: *mut Self, len: usize) {
+        *res = Self::zero();
+        for i in 0..len {
+            *res += *lhs.add(i) * *rhs.add(i)
+        }
+    }
+}
 
 pub trait Zero: Clone {
     fn zero() -> Self;
@@ -213,8 +224,6 @@ impl<P> RawPtr<P> {
     fn take_as_vec(self) -> Vec<P> {
         let capacity = self.cap;
         let len = self.len;
-        // self.len = 0;
-        // self.cap = 0;
         unsafe { Vec::from_raw_parts(self.ptr.as_ptr(), len, capacity) }
     }
 
@@ -487,13 +496,59 @@ where
         &self.dim
     }
 
+    fn transpose(&self, d1: usize, d2: usize) -> GResult<DTensor<A>> {
+        if d1 > self.size() {
+            return Err(GError::DimOutOfRange {
+                shape: self.dim().shape().clone(),
+                dim: d1,
+                op: "transpose",
+            });
+        }
+        if d2 > self.size() {
+            return Err(GError::DimOutOfRange {
+                shape: self.dim().shape().clone(),
+                dim: d2,
+                op: "transpose",
+            });
+        }
+        let new_dim = self.dim.transpose(d1, d2)?;
+        Ok(DTensor {
+            data: self.data.as_ref(),
+            dim: new_dim,
+        })
+    }
+
+    fn cat(ts: &[DTensor<A>]) -> GResult<DTensor<A>> {
+        let t0 = &ts[0];
+        let mut cat_dims = t0.shape().as_slice().to_vec();
+        cat_dims[0] = 0;
+        let mut offsets = vec![0usize];
+        for (t_i, t) in ts.iter().enumerate() {
+            for (dim_idx, (v1, v2)) in t0
+                .shape()
+                .as_slice()
+                .iter()
+                .zip(t.shape().as_slice().iter())
+                .enumerate()
+            {
+                if dim_idx == 0 {
+                    cat_dims[0] += v2;
+                }
+            }
+            let next_offset = offsets.last().unwrap() + t.shape().elem_count();
+            offsets.push(next_offset);
+        }
+
+        todo!()
+        // Ok()
+    }
+
     fn axis_index(&self, a: Axis, index: usize) -> DTensor<A> {
-        let stride = self.dim.stride[a.index()];
+        let axis = a.index();
+        let stride = self.dim.stride[axis];
         let offset = index * stride;
-
         let axis_dim = self.dim.shape().select_axis(a);
-        let s = axis_dim.strides();
-
+        let s = shape::select_axis(&self.dim.stride, a);
         let raw_ref = RawRef {
             ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
             len: self.data.len() - offset,
@@ -502,7 +557,7 @@ where
             data: MemoryDevice::Cpu(RawData::Ref(raw_ref)),
             dim: Dim {
                 s: axis_dim,
-                stride: s,
+                stride: s.into_boxed_slice(),
             },
         }
     }
@@ -626,10 +681,24 @@ mod tests {
     fn test_cude() {
         let m = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
         let v = m.as_slice();
-        for v in m.as_ref().iter() {
-            println!("t:{:?}", v);
-        }
         println!("v:{:?}", m);
+        println!("shape:{:?}", m.dim().shape().as_slice());
+        println!("stride:{:?}", m.dim().stride());
+
+        for v in m.iter() {
+            println!("v:{:?}", *v);
+        }
+
+        let m1 = m.transpose(0, 1).unwrap();
+
+        for v in m1.iter() {
+            println!("v1:{:?}", *v);
+        }
+        let vv = m1.axis_index(Axis(0), 0);
+        println!("vv:{:?}", vv);
+        println!("m1:{:?}", m1);
+        println!("shape:{:?}", m1.dim().shape().as_slice());
+        println!("stride:{:?}", m1.dim().stride());
     }
 
     #[test]

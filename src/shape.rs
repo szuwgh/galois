@@ -1,5 +1,5 @@
+use crate::{GError, GResult};
 use std::iter;
-
 pub(crate) fn zip<I, J>(i: I, j: J) -> iter::Zip<I::IntoIter, J::IntoIter>
 where
     I: IntoIterator,
@@ -8,6 +8,7 @@ where
     i.into_iter().zip(j)
 }
 
+#[derive(Copy, Clone)]
 pub struct Axis(pub usize);
 
 impl Axis {
@@ -35,6 +36,25 @@ impl Dim {
     pub fn stride(&self) -> &[usize] {
         &self.stride
     }
+
+    pub fn transpose(&self, d1: usize, d2: usize) -> GResult<Dim> {
+        let rank = self.s.size();
+        if rank <= d1 || rank <= d2 {
+            return Err(GError::UnexpectedNumberOfDims {
+                expected: usize::max(d1, d1),
+                got: rank,
+                shape: self.shape().clone(),
+            });
+        }
+        let mut stride = self.stride().to_vec();
+        let mut dims = self.shape().as_slice().to_vec();
+        dims.swap(d1, d2);
+        stride.swap(d1, d2);
+        Ok(Self {
+            s: Shape::from_vec(dims),
+            stride: stride.into_boxed_slice(),
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -53,10 +73,18 @@ impl Shape {
         Shape::from_vec(v.to_vec())
     }
 
-    pub fn dim4(&self) -> (usize, usize, usize, usize) {
-        assert!(self.0.len() == 4);
-        (self.0[0], self.0[1], self.0[2], self.0[3])
+    pub fn dims4(&self) -> (usize, usize, usize, usize) {
+        dims4(&self.0)
     }
+
+    pub fn elem_count(&self) -> usize {
+        self.0.iter().product()
+    }
+}
+
+pub fn dims4(s: &[usize]) -> (usize, usize, usize, usize) {
+    assert!(s.len() >= 4);
+    (s[0], s[1], s[2], s[3])
 }
 
 impl PartialEq<Shape> for Shape {
@@ -68,12 +96,16 @@ impl PartialEq<Shape> for Shape {
     }
 }
 
+pub fn select_axis(src: &[usize], a: Axis) -> Vec<usize> {
+    let mut dst = vec![0; src.len() - 1];
+    dst[..a.index()].copy_from_slice(&src[..a.index()]);
+    dst[a.index()..].copy_from_slice(&src[a.index() + 1..]);
+    dst
+}
+
 impl Shape {
     pub fn select_axis(&self, a: Axis) -> Shape {
-        let mut dst = vec![0; self.dim() - 1];
-        let src = self.as_slice();
-        dst[..a.index()].copy_from_slice(&src[..a.index()]);
-        dst[a.index()..].copy_from_slice(&src[a.index() + 1..]);
+        let dst = select_axis(self.as_slice(), a);
         Shape::from_vec(dst)
     }
 
@@ -157,7 +189,7 @@ mod tests {
     use super::*;
 
     #[test] //[3, 2]
-    fn test_select_axis() {
+    fn test_tensor_transpose() {
         // let d = [4usize, 3, 2, 1];
         // let d2 = d.select_axis(Axis(0));
         // println!("{:?}", d2);

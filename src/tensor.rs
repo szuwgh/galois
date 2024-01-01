@@ -3,6 +3,8 @@ use crate::DTensorIter;
 use crate::Shape;
 use crate::{DTensor, TensorType};
 use half::f16;
+
+#[derive(Debug)]
 pub enum DType {
     U8,
     U16,
@@ -99,6 +101,22 @@ impl Tensor {
 
     pub fn reshape(&self, d: Shape) -> Tensor {
         op::reshape(self, d)
+    }
+
+    pub fn dtype(&self) -> DType {
+        return match self {
+            Tensor::U8(_) => DType::U8,
+            Tensor::I8(_) => DType::I8,
+            Tensor::I16(_) => DType::I16,
+            Tensor::U16(_) => DType::U16,
+            Tensor::F16(_) => DType::F16,
+            Tensor::F32(_) => DType::F32,
+            Tensor::I32(_) => DType::I32,
+            Tensor::U32(_) => DType::U32,
+            Tensor::I64(_) => DType::I64,
+            Tensor::F64(_) => DType::F64,
+            Tensor::U64(_) => DType::U64,
+        };
     }
 
     pub fn iter<'a>(&'a self) -> TensorIter<'a> {
