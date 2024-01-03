@@ -130,7 +130,7 @@ mod tests {
         println!("m2 dim:{:?}", m2.dim);
         println!("m2 {:?}", m2);
         println!("m2 stride:{:?}", m2.dim.stride);
-        let (out1, out2) = general_broadcasting::<_>(&m1.as_ref(), &m2.as_ref()).unwrap();
+        let (out1, out2) = general_broadcasting::<_>(&m1.view(), &m2.view()).unwrap();
 
         println!("out2:{:?}", out2);
         println!("stride:{:?}", out2.dim.stride);

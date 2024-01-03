@@ -33,6 +33,15 @@ pub trait TensorType:
     }
 }
 
+pub trait Similarity {
+    fn ip() -> usize;
+    fn l2() -> usize;
+    fn cosine() -> usize;
+    fn hamming() -> usize;
+    fn jaccard() -> usize;
+    fn tanimoto() -> usize;
+}
+
 pub trait Zero: Clone {
     fn zero() -> Self;
 }
@@ -369,6 +378,12 @@ where
     dim: Dim,
 }
 
+impl<A: TensorType> AsRef<DTensor<A>> for DTensor<A> {
+    fn as_ref(&self) -> &DTensor<A> {
+        &self
+    }
+}
+
 impl<A> DTensor<A>
 where
     A: TensorType,
@@ -416,7 +431,7 @@ where
         DTensor::from_raw(data, s)
     }
 
-    pub fn as_ref(&self) -> DTensor<A> {
+    pub fn view(&self) -> DTensor<A> {
         DTensor {
             data: self.data.as_ref(),
             dim: self.dim.clone(),
@@ -496,7 +511,7 @@ where
         &self.dim
     }
 
-    fn transpose(&self, d1: usize, d2: usize) -> GResult<DTensor<A>> {
+    fn transpose(self, d1: usize, d2: usize) -> GResult<DTensor<A>> {
         if d1 > self.size() {
             return Err(GError::DimOutOfRange {
                 shape: self.dim().shape().clone(),
@@ -513,17 +528,31 @@ where
         }
         let new_dim = self.dim.transpose(d1, d2)?;
         Ok(DTensor {
-            data: self.data.as_ref(),
+            data: self.data,
             dim: new_dim,
         })
     }
 
-    fn cat(ts: &[DTensor<A>]) -> GResult<DTensor<A>> {
-        let t0 = &ts[0];
+    fn cat<T: AsRef<DTensor<A>>>(ts: &[T], dim: usize) -> GResult<DTensor<A>> {
+        if dim == 0 {
+            Self::cat0(ts)
+        } else {
+            let args: Vec<DTensor<A>> = ts
+                .iter()
+                .map(|a| a.as_ref().view().transpose(0, dim))
+                .collect::<GResult<Vec<DTensor<A>>>>()?;
+            let cat = Self::cat0(&args)?;
+            cat.transpose(0, dim)
+        }
+    }
+
+    fn cat0<T: AsRef<DTensor<A>>>(ts: &[T]) -> GResult<DTensor<A>> {
+        let t0 = ts[0].as_ref();
         let mut cat_dims = t0.shape().as_slice().to_vec();
         cat_dims[0] = 0;
         let mut offsets = vec![0usize];
-        for (t_i, t) in ts.iter().enumerate() {
+        for (t_i, arg) in ts.iter().enumerate() {
+            let t = arg.as_ref();
             for (dim_idx, (v1, v2)) in t0
                 .shape()
                 .as_slice()
@@ -538,12 +567,37 @@ where
             let next_offset = offsets.last().unwrap() + t.shape().elem_count();
             offsets.push(next_offset);
         }
-
-        todo!()
-        // Ok()
+        println!("cat_dims:{:?}", cat_dims);
+        println!("offsets:{:?}", offsets);
+        let shape: Shape = Shape::from_vec(cat_dims);
+        let mut new_tensor = Self::zeros(shape);
+        for (arg, &offset) in ts.iter().zip(offsets.iter()) {
+            let t = arg.as_ref();
+            copy_strided_src(t.as_slice(), new_tensor.as_slice_mut(), offset, t.dim());
+        }
+        Ok(new_tensor)
     }
 
     fn axis_index(&self, a: Axis, index: usize) -> DTensor<A> {
+        let axis = a.index();
+        let stride = self.dim.stride[axis];
+        let offset = index * stride;
+        let axis_dim = self.dim.shape().select_axis(a);
+        let s = shape::select_axis(&self.dim.stride, a);
+        let raw_ref = RawRef {
+            ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
+            len: self.data.len() - offset,
+        };
+        DTensor {
+            data: MemoryDevice::Cpu(RawData::Ref(raw_ref)),
+            dim: Dim {
+                s: axis_dim,
+                stride: s.into_boxed_slice(),
+            },
+        }
+    }
+
+    fn axis_index_inner(&self, a: Axis, index: usize) -> DTensor<A> {
         let axis = a.index();
         let stride = self.dim.stride[axis];
         let offset = index * stride;
@@ -583,6 +637,120 @@ where
     }
 }
 
+#[derive(Debug)]
+pub struct StridedIndex<'a> {
+    next_storage_index: Option<usize>,
+    multi_index: Vec<usize>,
+    dims: &'a [usize],
+    stride: &'a [usize],
+}
+
+impl<'a> StridedIndex<'a> {
+    pub(crate) fn new(dims: &'a [usize], stride: &'a [usize], start_offset: usize) -> Self {
+        let elem_count: usize = dims.iter().product();
+        let next_storage_index = if elem_count == 0 {
+            None
+        } else {
+            // This applies to the scalar case.
+            Some(start_offset)
+        };
+        StridedIndex {
+            next_storage_index,
+            multi_index: vec![0; dims.len()],
+            dims,
+            stride,
+        }
+    }
+}
+
+impl<'a> Iterator for StridedIndex<'a> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let storage_index = match self.next_storage_index {
+            None => return None,
+            Some(storage_index) => storage_index,
+        };
+        let mut updated = false;
+        let mut next_storage_index = storage_index;
+        for ((multi_i, max_i), stride_i) in self
+            .multi_index
+            .iter_mut()
+            .zip(self.dims.iter())
+            .zip(self.stride.iter())
+            .rev()
+        {
+            let next_i = *multi_i + 1;
+            if next_i < *max_i {
+                *multi_i = next_i;
+                updated = true;
+                next_storage_index += stride_i;
+                break;
+            } else {
+                next_storage_index -= *multi_i * stride_i;
+                *multi_i = 0
+            }
+        }
+        self.next_storage_index = if updated {
+            Some(next_storage_index)
+        } else {
+            None
+        };
+        Some(storage_index)
+    }
+}
+
+#[derive(Debug)]
+pub enum StridedBlocks<'a> {
+    SingleBlock {
+        start_offset: usize,
+        len: usize,
+    },
+    MultipleBlocks {
+        block_start_index: StridedIndex<'a>,
+        block_len: usize,
+    },
+}
+
+fn copy_strided_src<T: Copy>(src: &[T], dst: &mut [T], dst_offset: usize, src_d: &Dim) {
+    match src_d.strided_blocks() {
+        crate::StridedBlocks::SingleBlock { start_offset, len } => {
+            let to_copy = (dst.len() - dst_offset).min(len);
+            dst[dst_offset..dst_offset + to_copy]
+                .copy_from_slice(&src[start_offset..start_offset + to_copy])
+        }
+        crate::StridedBlocks::MultipleBlocks {
+            block_start_index,
+            block_len: 1,
+        } => {
+            for (dst_index, src_index) in block_start_index.enumerate() {
+                let dst_index = dst_index + dst_offset;
+                if dst_index >= dst.len() {
+                    break;
+                }
+                dst[dst_index] = src[src_index]
+            }
+        }
+        crate::StridedBlocks::MultipleBlocks {
+            block_start_index,
+            block_len,
+        } => {
+            println!("MultipleBlocks");
+            let mut dst_index = dst_offset;
+            for src_index in block_start_index {
+                let next_dst_index = dst_index + block_len;
+                if dst_index >= dst.len() {
+                    break;
+                }
+                let to_copy = usize::min(block_len, dst.len() - dst_index);
+                dst[dst_index..dst_index + to_copy]
+                    .copy_from_slice(&src[src_index..src_index + to_copy]);
+                dst_index = next_dst_index
+            }
+        }
+    }
+}
+
 impl<T> Drop for RawData<T> {
     fn drop(&mut self) {
         match self {
@@ -609,24 +777,24 @@ impl<T> Drop for RawPtr<T> {
 
 impl<A: TensorType> fmt::Debug for DTensor<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        format_tensor(self, 0, f)
+        format_tensor(self.view(), 0, f)
     }
 }
 
 fn format_tensor<A: TensorType>(
-    tensor: &DTensor<A>,
+    tensor: DTensor<A>,
     depth: usize,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
     match tensor.shape().as_slice() {
         &[] => {}
         &[len] => {
-            let v = tensor.as_slice();
             f.write_str("[")?;
-            f.write_str(&format!("{:?}", v[0]))?;
-            for i in 1..len {
-                f.write_str(",")?;
-                f.write_str(&format!(" {:?}", v[i]))?;
+            for (i, v) in tensor.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(",")?;
+                }
+                f.write_str(&format!(" {:?}", *v))?;
             }
             f.write_str("]")?;
         }
@@ -635,10 +803,10 @@ fn format_tensor<A: TensorType>(
             let indent = " ".repeat(depth + 1);
             let separator = format!(",\n{}{}", blank_lines, indent);
             f.write_str("[")?;
-            format_tensor(&tensor.axis_index(Axis(0), 0), depth, f)?;
+            format_tensor(tensor.axis_index(Axis(0), 0), depth, f)?;
             for i in 1..shape[0] {
                 f.write_str(&separator)?;
-                format_tensor(&tensor.axis_index(Axis(0), i), depth, f)?;
+                format_tensor(tensor.axis_index(Axis(0), i), depth, f)?;
             }
             f.write_str("]")?;
         }
@@ -716,5 +884,37 @@ mod tests {
 
         let t2 = t1.reshape(Shape::from_array([3, 2]));
         println!("t2:{:?}", t2);
+    }
+
+    #[test]
+    fn test_transpose() {
+        let m = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
+        let m1 = m.transpose(1, 0).unwrap();
+        println!("m1:{:?}", m1);
+    }
+
+    #[test]
+    fn test_cat() {
+        let m1 = mat(&[[1.0, 2.0], [3.0, 4.0]]);
+
+        let m2 = mat(&[[1.0, 2.0], [3.0, 4.0]]);
+
+        let m3 = DTensor::cat(&[&m1, &m2], 0).unwrap();
+
+        println!("m3:{:?}", m3);
+        for m in m3.iter() {
+            println!("m:{:?}", *m);
+        }
+
+        let m4: DTensor<f64> = DTensor::cat(&[&m1, &m2], 1).unwrap();
+
+        println!("m4:{:?}", m4);
+        println!("shape:{:?}", m4.dim());
+        println!("slice:{:?}", m4.as_slice());
+
+        let m5 = mat(&[[1.0, 2.0, 1.0, 2.0], [3.0, 4.0, 3.0, 4.0]]);
+        println!("m5:{:?}", m5);
+        println!("shape:{:?}", m5.dim());
+        println!("slice:{:?}", m5.as_slice());
     }
 }

@@ -33,8 +33,16 @@ impl Dim {
         &self.s
     }
 
+    pub fn shape_mut(&mut self) -> &mut Shape {
+        &mut self.s
+    }
+
     pub fn stride(&self) -> &[usize] {
         &self.stride
+    }
+
+    pub fn dims(&self) -> &[usize] {
+        self.s.as_slice()
     }
 
     pub fn transpose(&self, d1: usize, d2: usize) -> GResult<Dim> {
@@ -54,6 +62,47 @@ impl Dim {
             s: Shape::from_vec(dims),
             stride: stride.into_boxed_slice(),
         })
+    }
+
+    //内存是否连续
+    pub fn is_contiguous(&self, stride: &[usize]) -> bool {
+        if self.shape().0.len() != stride.len() {
+            return false;
+        }
+        let mut acc = 1;
+        for (&stride, &dim) in stride.iter().zip(self.shape().0.iter()).rev() {
+            if stride != acc {
+                return false;
+            }
+            acc *= dim;
+        }
+        true
+    }
+
+    pub(crate) fn strided_blocks(&self) -> crate::StridedBlocks {
+        let mut block_len = 1;
+        let mut contiguous_dims = 0; // These are counted from the right.
+        for (&stride, &dim) in self.stride().iter().zip(self.dims().iter()).rev() {
+            if stride != block_len {
+                break;
+            }
+            block_len *= dim;
+            contiguous_dims += 1;
+        }
+        let index_dims = self.dims().len() - contiguous_dims;
+        if index_dims == 0 {
+            crate::StridedBlocks::SingleBlock {
+                start_offset: 0,
+                len: block_len,
+            }
+        } else {
+            let block_start_index =
+                crate::StridedIndex::new(&self.dims()[..index_dims], &self.stride[..index_dims], 0);
+            crate::StridedBlocks::MultipleBlocks {
+                block_start_index,
+                block_len,
+            }
+        }
     }
 }
 

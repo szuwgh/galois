@@ -112,7 +112,7 @@ mod tests {
             [3.0, 3.0, 3.0],
         ]);
 
-        m1.as_ref()
+        m1.view()
             .iter()
             .for_each(|x| if *x > 1.0 { *x = 1.0 } else { *x = 0.0 });
 
