@@ -13,6 +13,7 @@ use crate::shape::Dim;
 pub use crate::shape::{Axis, Shape};
 use crate::zip::Zip;
 use core::ptr::{self, NonNull};
+
 use rawpointer::PointerExt;
 use std::fmt;
 use std::mem::forget;
@@ -533,7 +534,30 @@ where
         })
     }
 
-    fn cat<T: AsRef<DTensor<A>>>(ts: &[T], dim: usize) -> GResult<DTensor<A>> {
+    pub fn pad(&self, dim: usize, left: usize, right: usize, elem: A) -> GResult<DTensor<A>> {
+        if left == 0 && right == 0 {
+            Ok(self.clone())
+        } else if left == 0 {
+            let mut dims = self.dim().dims().to_vec();
+            dims[dim] = right;
+            let right = DTensor::<A>::from_elem(elem, Shape::from_vec(dims));
+            DTensor::cat(&[self, &right], dim)
+        } else if right == 0 {
+            let mut dims = self.dim().dims().to_vec();
+            dims[dim] = left;
+            let left = DTensor::<A>::from_elem(elem, Shape::from_vec(dims));
+            DTensor::cat(&[&left, &self], dim)
+        } else {
+            let mut dims = self.dim().dims().to_vec();
+            dims[dim] = left;
+            let left = DTensor::<A>::from_elem(elem, Shape::from_slice(dims.as_slice()));
+            dims[dim] = right;
+            let right = DTensor::<A>::from_elem(elem, Shape::from_vec(dims));
+            DTensor::cat(&[&left, &self, &right], dim)
+        }
+    }
+
+    pub fn cat<T: AsRef<DTensor<A>>>(ts: &[T], dim: usize) -> GResult<DTensor<A>> {
         if dim == 0 {
             Self::cat0(ts)
         } else {
@@ -567,8 +591,6 @@ where
             let next_offset = offsets.last().unwrap() + t.shape().elem_count();
             offsets.push(next_offset);
         }
-        println!("cat_dims:{:?}", cat_dims);
-        println!("offsets:{:?}", offsets);
         let shape: Shape = Shape::from_vec(cat_dims);
         let mut new_tensor = Self::zeros(shape);
         for (arg, &offset) in ts.iter().zip(offsets.iter()) {
@@ -916,5 +938,12 @@ mod tests {
         println!("m5:{:?}", m5);
         println!("shape:{:?}", m5.dim());
         println!("slice:{:?}", m5.as_slice());
+    }
+
+    #[test]
+    fn test_pad() {
+        let m1 = mat(&[[1.0, 2.0], [3.0, 4.0]]);
+        let d = m1.pad(1, 1, 0, 5.0).unwrap();
+        println!("{:?}", d);
     }
 }
