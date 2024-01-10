@@ -65,7 +65,8 @@ impl Dim {
     }
 
     //内存是否连续
-    pub fn is_contiguous(&self, stride: &[usize]) -> bool {
+    pub fn is_contiguous(&self) -> bool {
+        let stride = self.stride();
         if self.shape().0.len() != stride.len() {
             return false;
         }

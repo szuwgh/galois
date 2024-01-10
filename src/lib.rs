@@ -1,6 +1,6 @@
 #![feature(concat_idents)]
 mod broadcast;
-mod error;
+pub mod error;
 mod method;
 mod op;
 pub mod shape;
@@ -452,24 +452,6 @@ where
         }
     }
 
-    pub fn reshape(&self, s: Shape) -> DTensor<A>
-    where
-        A: Clone,
-    {
-        if self.dim.shape().size() != s.size() {
-            panic!(
-                "ndarray: incompatible shapes in reshape, attempted from: {:?}, to: {:?}",
-                self.dim.shape().as_slice(),
-                s.as_slice()
-            )
-        }
-        let stride = s.strides();
-        DTensor {
-            data: self.data.as_ref(),
-            dim: Dim { s, stride },
-        }
-    }
-
     pub fn with_shape(v: Vec<A>, d: Shape) -> Self {
         Self::from_vec(v, d)
     }
@@ -510,6 +492,34 @@ where
 
     pub fn dim(&self) -> &Dim {
         &self.dim
+    }
+
+    pub fn is_contiguous(&self) -> bool {
+        self.dim.is_contiguous()
+    }
+
+    pub fn reshape(&self, s: Shape) -> DTensor<A>
+    where
+        A: Clone,
+    {
+        if self.dim.shape().size() != s.size() {
+            panic!(
+                "ndarray: incompatible shapes in reshape, attempted from: {:?}, to: {:?}",
+                self.dim.shape().as_slice(),
+                s.as_slice()
+            )
+        }
+        if self.dim().is_contiguous() {
+            let stride = s.strides();
+            DTensor {
+                data: self.data.as_ref(),
+                dim: Dim { s, stride },
+            }
+        } else {
+            let mut new_tensor = Self::zeros(s);
+            copy_strided_src(self.as_slice(), new_tensor.as_slice_mut(), 0, self.dim());
+            new_tensor
+        }
     }
 
     fn transpose(self, d1: usize, d2: usize) -> GResult<DTensor<A>> {
