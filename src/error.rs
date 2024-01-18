@@ -1,3 +1,4 @@
+use crate::Dim;
 use crate::Shape;
 use std::io;
 use std::io::Error as IOError;
@@ -32,6 +33,21 @@ pub enum GError {
         expected: usize,
         got: usize,
         shape: Shape,
+    },
+
+    #[error("shape mismatch in {op}, lhs: {lhs:?}, rhs: {rhs:?}")]
+    ShapeMismatchBinaryOp {
+        lhs: Shape,
+        rhs: Shape,
+        op: &'static str,
+    },
+
+    #[error("shape mismatch in lhs: {lhs_l:?}, rhs: {rhs_l:?}")]
+    MatMulUnexpectedStriding {
+        lhs_l: Dim,
+        rhs_l: Dim,
+        bmnk: (usize, usize, usize, usize),
+        msg: &'static str,
     },
 }
 

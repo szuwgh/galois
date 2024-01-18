@@ -5,6 +5,7 @@ mod method;
 mod op;
 pub mod shape;
 mod simd;
+use crate::broadcast::broadcasting_matmul_op;
 mod zip;
 extern crate alloc;
 
@@ -142,11 +143,38 @@ impl<P> RawRef<P> {
     }
 }
 
-#[derive(Clone)]
 struct RawPtr<P> {
     ptr: NonNull<P>,
     len: usize,
     cap: usize,
+}
+
+impl<P> Clone for RawPtr<P> {
+    fn clone(&self) -> Self {
+        use alloc::alloc::{alloc, handle_alloc_error, Layout};
+        let layout = match Layout::array::<P>(self.cap) {
+            Ok(layout) => layout,
+            Err(_) => capacity_overflow(),
+        };
+        let dst = if layout.size() == 0 {
+            core::ptr::NonNull::<P>::dangling()
+        } else {
+            let ptr = unsafe { alloc(layout) } as *mut P;
+            if ptr.is_null() {
+                handle_alloc_error(layout)
+            } else {
+                unsafe { NonNull::<P>::new_unchecked(ptr) }
+            }
+        };
+        unsafe {
+            ptr::copy(self.ptr.as_ptr(), dst.as_ptr(), self.cap);
+        }
+        Self {
+            ptr: dst,
+            len: self.len,
+            cap: self.cap,
+        }
+    }
 }
 
 impl<P> RawData<P> {
@@ -309,7 +337,7 @@ impl<'a, A> DTensorIter<'a, A>
 where
     A: TensorType,
 {
-    fn zip(self, t: DTensorIter<'a, A>) -> Zip<'a, A>
+    fn zip2(self, t: DTensorIter<'a, A>) -> Zip<'a, A>
     where
         Self: Sized,
     {
@@ -498,10 +526,73 @@ where
         self.dim.is_contiguous()
     }
 
-    pub fn reshape(&self, s: Shape) -> DTensor<A>
+    pub fn broadcast_with(&self, s: &Shape) -> GResult<DTensor<A>> {
+        let broadcast_dim = self.dim().broadcast_with(s)?;
+        Ok(DTensor {
+            data: self.data.as_ref(),
+            dim: broadcast_dim,
+        })
+    }
+
+    pub fn matmul(&self, rhs: &DTensor<A>) -> GResult<DTensor<A>>
     where
-        A: Clone,
+        A: 'static,
     {
+        let lhs = self;
+        let (l_shape, r_shape) = broadcasting_matmul_op::<A>(lhs.shape(), rhs.shape())?;
+        let l_broadcast = l_shape == *lhs.shape();
+        let r_broadcast = r_shape == *rhs.shape();
+        match (l_broadcast, r_broadcast) {
+            (true, true) => lhs._matmul(rhs),
+            (false, true) => lhs.broadcast_with(&l_shape)?._matmul(rhs),
+            (true, false) => lhs._matmul(&rhs.broadcast_with(&r_shape)?),
+            (false, false) => lhs
+                .broadcast_with(&l_shape)?
+                ._matmul(&rhs.broadcast_with(&r_shape)?),
+        }
+    }
+
+    pub fn _matmul(&self, rhs: &DTensor<A>) -> GResult<DTensor<A>>
+    where
+        A: 'static,
+    {
+        let l_dim = self.shape().as_slice();
+        let r_dim: &[usize] = rhs.shape().as_slice();
+        let dim = l_dim.len();
+        if dim < 2 || r_dim.len() != dim {
+            return Err(GError::ShapeMismatchBinaryOp {
+                lhs: self.shape().clone(),
+                rhs: rhs.shape().clone(),
+                op: "matmul",
+            });
+        }
+        let m = l_dim[dim - 2];
+        let k = l_dim[dim - 1];
+        let k2 = r_dim[dim - 2];
+        let n = r_dim[dim - 1];
+        let mut c_dim = l_dim[..dim - 2].to_vec();
+        c_dim.extend(&[m, n]);
+        let c_shape = Shape::from_vec(c_dim);
+        let batching: usize = l_dim[..dim - 2].iter().product();
+        let batching_b: usize = r_dim[..dim - 2].iter().product();
+        if k != k2 || batching != batching_b {
+            return Err(GError::ShapeMismatchBinaryOp {
+                lhs: self.shape().clone(),
+                rhs: rhs.shape().clone(),
+                op: "matmul",
+            });
+        }
+
+        let c = MatMul(batching, m, n, k).compute(
+            self.as_slice(),
+            self.dim(),
+            rhs.as_slice(),
+            rhs.dim(),
+        )?;
+        Ok(Self::from_vec(c, c_shape))
+    }
+
+    pub fn reshape(&self, s: Shape) -> DTensor<A> {
         if self.dim.shape().size() != s.size() {
             panic!(
                 "ndarray: incompatible shapes in reshape, attempted from: {:?}, to: {:?}",
@@ -669,6 +760,103 @@ where
     }
 }
 
+struct MatMul(usize, usize, usize, usize);
+
+impl MatMul {
+    fn compute<T: TensorType + 'static>(
+        &self,
+        lhs: &[T],
+        lhs_l: &Dim,
+        rhs: &[T],
+        rhs_l: &Dim,
+    ) -> GResult<Vec<T>> {
+        use gemm::{gemm, Parallelism};
+
+        // match T::DTYPE {
+        //     DType::F16 | DType::F32 | DType::F64 => {}
+        //     _ => Err(Error::UnsupportedDTypeForOp(T::DTYPE, "matmul").bt())?,
+        // }
+
+        let (b, m, n, k) = (self.0, self.1, self.2, self.3);
+        let lhs_stride = lhs_l.stride();
+        let rhs_stride = rhs_l.stride();
+        let rank = lhs_stride.len();
+        let lhs_cs = lhs_stride[rank - 1];
+        let lhs_rs = lhs_stride[rank - 2];
+
+        let rhs_cs = rhs_stride[rank - 1];
+        let rhs_rs = rhs_stride[rank - 2];
+
+        let a_skip: usize = match lhs_stride[..rank - 2] {
+            [s1, stride] if s1 == stride * lhs_l.dims()[1] => stride,
+            [stride] => stride,
+            [] => m * k,
+            _ => {
+                return Err(GError::MatMulUnexpectedStriding {
+                    lhs_l: lhs_l.clone(),
+                    rhs_l: rhs_l.clone(),
+                    bmnk: (b, m, n, k),
+                    msg: "non-contiguous lhs",
+                });
+            }
+        };
+        let b_skip: usize = match rhs_stride[..rank - 2] {
+            [s1, stride] if s1 == stride * rhs_l.dims()[1] => stride,
+            [stride] => stride,
+            [] => n * k,
+            _ => {
+                return Err(GError::MatMulUnexpectedStriding {
+                    lhs_l: lhs_l.clone(),
+                    rhs_l: rhs_l.clone(),
+                    bmnk: (b, m, n, k),
+                    msg: "non-contiguous lhs",
+                });
+            }
+        };
+        let c_skip: usize = m * n;
+        let dst_shape: Shape = Shape::from_array([m, n]);
+        let dst_strides = dst_shape.stride_contiguous();
+        let dst_rs = dst_strides[0];
+        let dst_cs = dst_strides[1];
+        let mut dst = vec![T::zero(); b * m * n];
+        let num_threads = num_cpus::get();
+        let parallelism = if num_threads > 1 {
+            Parallelism::Rayon(num_threads)
+        } else {
+            Parallelism::None
+        };
+        for step in 0..b {
+            let lhs_p = &lhs[step * a_skip..];
+            let rhs_p = &rhs[step * b_skip..];
+            let dst_p = &mut dst[step * c_skip..];
+            unsafe {
+                gemm(
+                    /* m: usize = */ m,
+                    /* n: usize = */ n,
+                    /* k: usize = */ k,
+                    /* dst: *mut T = */ dst_p.as_mut_ptr(),
+                    /* dst_cs: isize = */ dst_cs as isize,
+                    /* dst_rs: isize = */ dst_rs as isize,
+                    /* read_dst: bool = */ false,
+                    /* lhs: *const T = */ lhs_p.as_ptr(),
+                    /* lhs_cs: isize = */ lhs_cs as isize,
+                    /* lhs_rs: isize = */ lhs_rs as isize,
+                    /* rhs: *const T = */ rhs_p.as_ptr(),
+                    /* rhs_cs: isize = */ rhs_cs as isize,
+                    /* rhs_rs: isize = */ rhs_rs as isize,
+                    /* alpha: T = */ T::zero(),
+                    /* beta: T = */ T::one(),
+                    /* conj_dst: bool = */ false,
+                    /* conj_lhs: bool = */ false,
+                    /* conj_rhs: bool = */ false,
+                    parallelism,
+                )
+            }
+        }
+        Ok(dst)
+    }
+}
+
 #[derive(Debug)]
 pub struct StridedIndex<'a> {
     next_storage_index: Option<usize>,
@@ -767,7 +955,6 @@ fn copy_strided_src<T: Copy>(src: &[T], dst: &mut [T], dst_offset: usize, src_d:
             block_start_index,
             block_len,
         } => {
-            println!("MultipleBlocks");
             let mut dst_index = dst_offset;
             for src_index in block_start_index {
                 let next_dst_index = dst_index + block_len;
@@ -948,12 +1135,35 @@ mod tests {
         println!("m5:{:?}", m5);
         println!("shape:{:?}", m5.dim());
         println!("slice:{:?}", m5.as_slice());
+
+        let m6 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let m7 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let m8: DTensor<f64> = DTensor::cat(&[&m6, &m7], 2).unwrap();
+        println!("m8:{:?}", m8);
+        println!("shape:{:?}", m8.dim());
+        println!("slice:{:?}", m8.as_slice());
     }
 
     #[test]
     fn test_pad() {
-        let m1 = mat(&[[1.0, 2.0], [3.0, 4.0]]);
-        let d = m1.pad(1, 1, 0, 5.0).unwrap();
+        let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let d = m1.pad(2, 1, 1, 0.0).unwrap().pad(3, 0, 0, 0.0).unwrap();
+        for x in d.iter() {
+            println!("{:?}", *x);
+        }
+        println!("{:?}", d);
+    }
+
+    #[test]
+    fn test_matmul() {
+        let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let m2 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let d = m1._matmul(&m2).unwrap();
+        println!("{:?}", d);
+
+        let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let m2 = mat(&[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]);
+        let d = m1.matmul(&m2).unwrap();
         println!("{:?}", d);
     }
 }

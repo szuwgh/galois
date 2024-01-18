@@ -21,13 +21,12 @@ fn copy_slice<T: Copy>(des: &mut [T], src: &[T]) -> usize {
     l
 }
 
-fn upcast(to: &Shape, from: &Shape, stride: &[usize]) -> Option<Box<[usize]>> {
+pub(crate) fn upcast(to: &Shape, from: &Shape, stride: &[usize]) -> Option<Box<[usize]>> {
     let mut new_stride = to.0.clone();
 
     if to.dim() < from.dim() {
         return None;
     }
-
     {
         let mut new_stride_iter = new_stride.iter_mut().rev();
         for ((er, es), dr) in from
@@ -45,12 +44,55 @@ fn upcast(to: &Shape, from: &Shape, stride: &[usize]) -> Option<Box<[usize]>> {
                 return None;
             }
         }
-
         for dr in new_stride_iter {
             *dr = 0;
         }
     }
     Some(new_stride)
+}
+
+pub fn broadcasting_binary_op<A>(t1: &Shape, t2: &Shape) -> GResult<Shape> {
+    let (d1, d2) = (t1.dim(), t2.dim());
+    let k = if d1 > d2 { d1 - d2 } else { d2 - d1 };
+    let slice1 = t1.as_slice();
+    let slice2 = t2.as_slice();
+    let mut output = Shape::zero(slice1.len());
+    let output_slice = output.as_slice_mut();
+    if copy!(output_slice, slice1) != slice1.len() {
+        panic!("copy dimension error");
+    }
+    for (out, s2) in &mut output_slice[k..].iter_mut().zip(slice2.iter()) {
+        if *out != *s2 {
+            if *out == 1 {
+                *out = *s2
+            } else if *s2 != 1 {
+                return Err(GError::ShapeError(ShapeErrorKind::IncompatibleShape));
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn broadcasting_matmul_op<A>(lhs: &Shape, rhs: &Shape) -> GResult<(Shape, Shape)> {
+    let lhs_dims = lhs.as_slice();
+    let rhs_dims = rhs.as_slice();
+    if lhs_dims.len() < 2 || rhs_dims.len() < 2 {
+        panic!("only 2d matrixes are supported {lhs:?} {rhs:?}")
+    }
+    let (m, lhs_k) = (lhs_dims[lhs_dims.len() - 2], lhs_dims[lhs_dims.len() - 1]);
+    let (rhs_k, n) = (rhs_dims[rhs_dims.len() - 2], rhs_dims[rhs_dims.len() - 1]);
+    if lhs_k != rhs_k {
+        panic!("different inner dimensions in broadcast matmul {lhs:?} {rhs:?}")
+    }
+
+    let lhs_b = Shape::from_slice(&lhs_dims[..lhs_dims.len() - 2]);
+    let rhs_b = Shape::from_slice(&rhs_dims[..rhs_dims.len() - 2]);
+    let bcast = broadcasting_binary_op::<A>(&lhs_b, &rhs_b)?;
+    let bcast_dims = bcast.as_slice();
+
+    let bcast_lhs = [bcast_dims, &[m, lhs_k]].concat();
+    let bcast_rhs = [bcast_dims, &[rhs_k, n]].concat();
+    Ok((Shape::from_vec(bcast_lhs), Shape::from_vec(bcast_rhs)))
 }
 
 // 广播主要发生在两种情况，一种情况是如果两个张量的维数不相等，但是它们的后缘维度的轴长相符。所谓后缘维度（trailing dimension）是指，

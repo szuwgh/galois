@@ -24,7 +24,7 @@ pub enum TensorValue<'a> {
     U16(&'a mut u16),
     U32(&'a mut u32),
     U64(&'a mut u64),
-    I8(&'a mut i8),
+    I8(&'a mut i8),  
     I16(&'a mut i16),
     I32(&'a mut i32),
     I64(&'a mut i64),

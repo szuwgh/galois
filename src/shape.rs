@@ -1,6 +1,6 @@
-use crate::{GError, GResult};
-use std::iter;
-pub(crate) fn zip<I, J>(i: I, j: J) -> iter::Zip<I::IntoIter, J::IntoIter>
+use super::error::{GError, GResult, ShapeErrorKind};
+
+pub(crate) fn zip<I, J>(i: I, j: J) -> std::iter::Zip<I::IntoIter, J::IntoIter>
 where
     I: IntoIterator,
     J: IntoIterator,
@@ -43,6 +43,17 @@ impl Dim {
 
     pub fn dims(&self) -> &[usize] {
         self.s.as_slice()
+    }
+
+    pub fn broadcast_with(&self, s: &Shape) -> GResult<Dim> {
+        let stride = match crate::broadcast::upcast(s, &self.s, &self.stride) {
+            Some(st) => st,
+            None => return Err(GError::ShapeError(ShapeErrorKind::IncompatibleShape)),
+        };
+        Ok(Dim {
+            s: s.clone(),
+            stride: stride,
+        })
     }
 
     pub fn transpose(&self, d1: usize, d2: usize) -> GResult<Dim> {
@@ -129,6 +140,21 @@ impl Shape {
 
     pub fn elem_count(&self) -> usize {
         self.0.iter().product()
+    }
+
+    pub(crate) fn stride_contiguous(&self) -> Vec<usize> {
+        let mut stride: Vec<_> = self
+            .0
+            .iter()
+            .rev()
+            .scan(1, |prod, u| {
+                let prod_pre_mult = *prod;
+                *prod *= u;
+                Some(prod_pre_mult)
+            })
+            .collect();
+        stride.reverse();
+        stride
     }
 }
 

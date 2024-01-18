@@ -1,4 +1,4 @@
-use super::broadcast::general_broadcasting;
+use super::broadcast::{broadcasting_binary_op, general_broadcasting};
 use super::DTensor;
 use crate::TensorType;
 
@@ -27,20 +27,44 @@ macro_rules! impl_binary_op {
         {
             type Output = DTensor<A>;
             fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
-                if self.shape() == rhs.shape() {
-                    self.iter().zip(rhs.iter()).ops(convert_iopsf(A::$mth));
-                    self
+                let lhs = self;
+                if lhs.shape() == rhs.shape() {
+                    lhs.iter().zip2(rhs.iter()).ops(convert_iopsf(A::$mth));
+                    lhs
                 } else {
-                    let (lhs, rhs2) = general_broadcasting::<A>(&self, rhs).unwrap();
-                    if lhs.shape() == self.shape() {
-                        self.iter().zip(rhs2.iter()).ops(convert_iopsf(A::$mth));
-                        self
-                    } else {
-                        lhs.iter()
-                            .zip(rhs2.iter())
+                    let broadcast_shape =
+                        broadcasting_binary_op::<A>(lhs.shape(), rhs.shape()).unwrap();
+
+                    let l_broadcast = broadcast_shape == *lhs.shape();
+                    let r_broadcast = broadcast_shape == *rhs.shape();
+
+                    let v = match (l_broadcast, r_broadcast) {
+                        (true, true) => {
+                            lhs.iter().zip2(rhs.iter()).ops(convert_iopsf(A::$mth));
+                            lhs
+                        }
+                        (true, false) => {
+                            lhs.iter()
+                                .zip2(rhs.broadcast_with(&broadcast_shape).unwrap().iter())
+                                .ops(convert_iopsf(A::$mth));
+                            lhs
+                        }
+                        (false, true) => lhs
+                            .broadcast_with(&broadcast_shape)
+                            .unwrap()
+                            .iter()
+                            .zip2(rhs.iter())
                             .map(clone_opsf(A::$mth))
-                            .collect_tensor(lhs.dim.shape().clone())
-                    }
+                            .collect_tensor(lhs.dim.shape().clone()),
+                        (false, false) => lhs
+                            .broadcast_with(&broadcast_shape)
+                            .unwrap()
+                            .iter()
+                            .zip2(rhs.broadcast_with(&broadcast_shape).unwrap().iter())
+                            .map(clone_opsf(A::$mth))
+                            .collect_tensor(lhs.dim.shape().clone()),
+                    };
+                    v
                 }
             }
         }
@@ -51,20 +75,44 @@ macro_rules! impl_binary_op {
         {
             type Output = DTensor<A>;
             fn $mth(self, rhs: DTensor<A>) -> Self::Output {
-                if self.shape() == rhs.shape() {
-                    self.iter().zip(rhs.iter()).ops(convert_iopsf(A::$mth));
-                    self
+                let lhs = self;
+                if lhs.shape() == rhs.shape() {
+                    lhs.iter().zip2(rhs.iter()).ops(convert_iopsf(A::$mth));
+                    lhs
                 } else {
-                    let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
-                    if lhs.shape() == self.shape() {
-                        self.iter().zip(rhs2.iter()).ops(convert_iopsf(A::$mth));
-                        self
-                    } else {
-                        lhs.iter()
-                            .zip(rhs2.iter())
+                    let broadcast_shape =
+                        broadcasting_binary_op::<A>(lhs.shape(), rhs.shape()).unwrap();
+
+                    let l_broadcast = broadcast_shape == *lhs.shape();
+                    let r_broadcast = broadcast_shape == *rhs.shape();
+
+                    let v = match (l_broadcast, r_broadcast) {
+                        (true, true) => {
+                            lhs.iter().zip2(rhs.iter()).ops(convert_iopsf(A::$mth));
+                            lhs
+                        }
+                        (true, false) => {
+                            lhs.iter()
+                                .zip2(rhs.broadcast_with(&broadcast_shape).unwrap().iter())
+                                .ops(convert_iopsf(A::$mth));
+                            lhs
+                        }
+                        (false, true) => lhs
+                            .broadcast_with(&broadcast_shape)
+                            .unwrap()
+                            .iter()
+                            .zip2(rhs.iter())
                             .map(clone_opsf(A::$mth))
-                            .collect_tensor(lhs.dim.shape().clone())
-                    }
+                            .collect_tensor(lhs.dim.shape().clone()),
+                        (false, false) => lhs
+                            .broadcast_with(&broadcast_shape)
+                            .unwrap()
+                            .iter()
+                            .zip2(rhs.broadcast_with(&broadcast_shape).unwrap().iter())
+                            .map(clone_opsf(A::$mth))
+                            .collect_tensor(lhs.dim.shape().clone()),
+                    };
+                    v
                 }
             }
         }
@@ -77,13 +125,13 @@ macro_rules! impl_binary_op {
             fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
                 if self.shape() == rhs.shape() {
                     self.iter()
-                        .zip(rhs.iter())
+                        .zip2(rhs.iter())
                         .map(clone_opsf(A::$mth))
                         .collect_tensor(rhs.dim.shape().clone())
                 } else {
                     let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
                     lhs.iter()
-                        .zip(rhs2.iter())
+                        .zip2(rhs2.iter())
                         .map(clone_opsf(A::$mth))
                         .collect_tensor(lhs.dim.shape().clone())
                 }
@@ -98,13 +146,13 @@ macro_rules! impl_binary_op {
             fn $mth(self, rhs: DTensor<A>) -> Self::Output {
                 if self.shape() == rhs.shape() {
                     self.iter()
-                        .zip(rhs.iter())
+                        .zip2(rhs.iter())
                         .map(clone_opsf(A::$mth))
                         .collect_tensor(rhs.dim.shape().clone())
                 } else {
                     let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
                     lhs.iter()
-                        .zip(rhs2.iter())
+                        .zip2(rhs2.iter())
                         .map(clone_opsf(A::$mth))
                         .collect_tensor(lhs.dim.shape().clone())
                 }
@@ -121,7 +169,12 @@ where
         if self.shape() != other.shape() {
             return false;
         }
-        return self.as_slice() == other.as_slice();
+        for (a, b) in self.iter().zip(other.iter()) {
+            if *a != *b {
+                return false;
+            }
+        }
+        return true;
     }
 }
 
