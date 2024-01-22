@@ -22,9 +22,13 @@ mod tensor;
 use half::f16;
 pub use tensor::DType;
 pub use tensor::Tensor;
-pub use tensor::TensorValue;
+
+pub trait ToUsize {
+    fn as_usize(&self) -> usize;
+}
+
 pub trait TensorType:
-    std::cmp::PartialOrd + fmt::Debug + PartialEq + Copy + num_traits::NumAssign + Sync + Send
+    std::cmp::PartialOrd + fmt::Debug + PartialEq + Copy + num_traits::NumAssign + Sync + Send + ToUsize
 {
     #[inline(always)]
     unsafe fn vec_dot(lhs: *const Self, rhs: *const Self, res: *mut Self, len: usize) {
@@ -438,7 +442,7 @@ where
     }
 
     fn cube<const M: usize, const N: usize>(mut xs: Vec<[[A; N]; M]>) -> Self {
-        let dim = [xs.len(), N, M];
+        let dim = [xs.len(), M, N];
         let shape = Shape::from_array(dim);
         let ptr = xs.as_mut_ptr();
         let cap = shape.size();
@@ -592,8 +596,8 @@ where
         Ok(Self::from_vec(c, c_shape))
     }
 
-    pub fn reshape(&self, s: Shape) -> DTensor<A> {
-        if self.dim.shape().size() != s.size() {
+    pub fn reshape(self, s: Shape) -> DTensor<A> {
+        if self.dim.shape().elem_count() != s.elem_count() {
             panic!(
                 "ndarray: incompatible shapes in reshape, attempted from: {:?}, to: {:?}",
                 self.dim.shape().as_slice(),
@@ -602,8 +606,8 @@ where
         }
         if self.dim().is_contiguous() {
             let stride = s.strides();
-            DTensor {
-                data: self.data.as_ref(),
+            Self {
+                data: self.data,
                 dim: Dim { s, stride },
             }
         } else {
@@ -1098,10 +1102,21 @@ mod tests {
 
     #[test]
     fn test_reshape() {
-        let t1 = arr(&[1, 2, 3, 4, 5, 6]);
-        println!("t1:{:?}", t1);
+        let t1 = cube(&[
+            [
+                [1.0, 2.0, 1.0, 2.0],
+                [3.0, 4.0, 3.0, 4.0],
+                [3.0, 4.0, 3.0, 4.0],
+            ],
+            [
+                [5.0, 6.0, 5.0, 6.0],
+                [7.0, 8.0, 7.0, 8.0],
+                [7.0, 8.0, 7.0, 8.0],
+            ],
+        ]);
+        println!("t1:{:?}", t1.shape());
 
-        let t2 = t1.reshape(Shape::from_array([3, 2]));
+        let t2 = t1.reshape(Shape::from_array([2, 3, 2, 2]));
         println!("t2:{:?}", t2);
     }
 
