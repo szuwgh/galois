@@ -138,8 +138,19 @@ impl Shape {
         dims4(&self.0)
     }
 
+    pub fn dims2(&self) -> (usize, usize) {
+        dims2(&self.0)
+    }
+
     pub fn elem_count(&self) -> usize {
         self.0.iter().product()
+    }
+
+    pub fn iter(&self) -> ShapeIter {
+        ShapeIter {
+            dim: self.clone(),
+            index: self.first_index(),
+        }
     }
 
     pub(crate) fn stride_contiguous(&self) -> Vec<usize> {
@@ -158,6 +169,11 @@ impl Shape {
     }
 }
 
+pub fn dims2(s: &[usize]) -> (usize, usize) {
+    assert!(s.len() >= 2);
+    (s[0], s[1])
+}
+
 pub fn dims4(s: &[usize]) -> (usize, usize, usize, usize) {
     assert!(s.len() >= 4);
     (s[0], s[1], s[2], s[3])
@@ -165,9 +181,9 @@ pub fn dims4(s: &[usize]) -> (usize, usize, usize, usize) {
 
 impl PartialEq<Shape> for Shape {
     fn eq(&self, other: &Shape) -> bool {
-        // if self.dim() != other.dim() {
-        //     return false;
-        // }
+        if self.elem_count() != other.elem_count() {
+            return false;
+        }
         return self.as_slice() == other.as_slice();
     }
 }
@@ -177,6 +193,24 @@ pub fn select_axis(src: &[usize], a: Axis) -> Vec<usize> {
     dst[..a.index()].copy_from_slice(&src[..a.index()]);
     dst[a.index()..].copy_from_slice(&src[a.index() + 1..]);
     dst
+}
+
+pub struct ShapeIter {
+    dim: Shape,
+    index: Option<Shape>,
+}
+
+impl Iterator for ShapeIter {
+    type Item = Shape;
+    fn next(&mut self) -> Option<Self::Item> {
+        let index = match self.index.take() {
+            None => return None,
+            Some(ix) => ix,
+        };
+        let cur_shape = index.clone();
+        self.index = self.dim.next_for(index);
+        Some(cur_shape)
+    }
 }
 
 impl Shape {
@@ -276,5 +310,14 @@ mod tests {
         let d = Shape::from_vec(vec![4usize, 3, 2, 1]);
         let d2 = d.select_axis(Axis(0));
         println!("{:?}", d2.as_slice());
+    }
+
+    #[test]
+    fn test_shape_iter() {
+        let d = Shape::from_vec(vec![1, 2, 4, 4]);
+        for s in d.iter() {
+            let (a, b, c, d) = s.dims4();
+            println!("a:{},b:{},c:{},c:{}", a, b, c, d);
+        }
     }
 }

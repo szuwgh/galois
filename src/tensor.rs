@@ -95,26 +95,6 @@ pub enum Tensor {
     F64(DTensor<f64>),
 }
 
-// impl<'a> Iterator for TensorIter<'a> {
-//     type Item = TensorValue<'a>;
-//     #[inline]
-//     fn next(&mut self) -> Option<Self::Item> {
-//         return match self {
-//             TensorIter::U8(t) => Some(TensorValue::U8(t.next()?)),
-//             TensorIter::I8(t) => Some(TensorValue::I8(t.next()?)),
-//             TensorIter::I16(t) => Some(TensorValue::I16(t.next()?)),
-//             TensorIter::U16(t) => Some(TensorValue::U16(t.next()?)),
-//             TensorIter::F16(t) => Some(TensorValue::F16(t.next()?)),
-//             TensorIter::F32(t) => Some(TensorValue::F32(t.next()?)),
-//             TensorIter::I32(t) => Some(TensorValue::I32(t.next()?)),
-//             TensorIter::U32(t) => Some(TensorValue::U32(t.next()?)),
-//             TensorIter::I64(t) => Some(TensorValue::I64(t.next()?)),
-//             TensorIter::F64(t) => Some(TensorValue::F64(t.next()?)),
-//             TensorIter::U64(t) => Some(TensorValue::U64(t.next()?)),
-//         };
-//     }
-// }
-
 impl Tensor {
     pub fn dtype(&self) -> DType {
         return match self {
@@ -131,22 +111,6 @@ impl Tensor {
             Tensor::U64(_) => DType::U64,
         };
     }
-
-    // pub fn iter<'a>(&'a self) -> TensorIter<'a> {
-    //     return match self {
-    //         Tensor::U8(t) => TensorIter::U8(t.iter()),
-    //         Tensor::I8(t) => TensorIter::I8(t.iter()),
-    //         Tensor::I16(t) => TensorIter::I16(t.iter()),
-    //         Tensor::U16(t) => TensorIter::U16(t.iter()),
-    //         Tensor::F16(t) => TensorIter::F16(t.iter()),
-    //         Tensor::F32(t) => TensorIter::F32(t.iter()),
-    //         Tensor::I32(t) => TensorIter::I32(t.iter()),
-    //         Tensor::U32(t) => TensorIter::U32(t.iter()),
-    //         Tensor::I64(t) => TensorIter::I64(t.iter()),
-    //         Tensor::F64(t) => TensorIter::F64(t.iter()),
-    //         Tensor::U64(t) => TensorIter::U64(t.iter()),
-    //     };
-    // }
 
     pub fn from_raw_data(ptr: *mut u8, length: usize, s: Shape, t: DType) -> Self {
         match t {

@@ -1,7 +1,6 @@
 #![feature(concat_idents)]
 mod broadcast;
 pub mod error;
-mod method;
 mod op;
 pub mod shape;
 mod simd;
@@ -16,6 +15,7 @@ use crate::zip::Zip;
 use core::ptr::{self, NonNull};
 
 use rawpointer::PointerExt;
+use shape::ShapeIter;
 use std::fmt;
 use std::mem::forget;
 mod tensor;
@@ -28,7 +28,15 @@ pub trait ToUsize {
 }
 
 pub trait TensorType:
-    std::cmp::PartialOrd + fmt::Debug + PartialEq + Copy + num_traits::NumAssign + Sync + Send + ToUsize
+    std::cmp::PartialOrd
+    + fmt::Debug
+    + PartialEq
+    + Copy
+    + num_traits::NumAssign
+    + Sync
+    + Send
+    + ToUsize
+    + 'static
 {
     #[inline(always)]
     unsafe fn vec_dot(lhs: *const Self, rhs: *const Self, res: *mut Self, len: usize) {
@@ -316,9 +324,10 @@ use std::marker::PhantomData;
 
 pub struct DTensorIter<'a, A> {
     ptr: NonNull<A>,
-    dim: Shape,
+    // dim: Shape,
     strides: Box<[usize]>,
-    index: Option<Shape>,
+    shape_iter: ShapeIter,
+    // index: Option<Shape>,
     _marker: PhantomData<&'a A>,
 }
 
@@ -326,12 +335,14 @@ impl<'a, A> Iterator for DTensorIter<'a, A> {
     type Item = &'a mut A;
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        let index = match self.index {
-            None => return None,
-            Some(ref ix) => ix.clone(),
-        };
+        // let index = match self.index {
+        //     None => return None,
+        //     Some(ref ix) => ix.clone(),
+        // };
+
+        // self.index = self.dim.next_for(index);
+        let index = self.shape_iter.next()?;
         let offset = Shape::stride_offset(&index, &self.strides);
-        self.index = self.dim.next_for(index);
         let ptr = unsafe { self.ptr.offset(offset) }.as_ptr();
         unsafe { Some(&mut *ptr) }
     }
@@ -488,6 +499,24 @@ where
         Self::from_vec(v, d)
     }
 
+    pub fn with_shape_fn<F>(d: Shape, mut f: F) -> Self
+    where
+        F: FnMut(Shape) -> A,
+    {
+        let iter = d.iter();
+        let size = d.elem_count();
+        let mut result = Vec::with_capacity(size);
+        let mut out_ptr = result.as_mut_ptr();
+        let mut len = 0;
+        iter.fold((), |(), elt| unsafe {
+            ptr::write(out_ptr, f(elt));
+            len += 1;
+            result.set_len(len);
+            out_ptr = out_ptr.offset(1);
+        });
+        Self::with_shape(result, d)
+    }
+
     fn from_vec(v: Vec<A>, s: Shape) -> Self {
         let stride = s.strides();
         let t = Self {
@@ -538,10 +567,7 @@ where
         })
     }
 
-    pub fn matmul(&self, rhs: &DTensor<A>) -> GResult<DTensor<A>>
-    where
-        A: 'static,
-    {
+    pub fn matmul(&self, rhs: &DTensor<A>) -> GResult<DTensor<A>> {
         let lhs = self;
         let (l_shape, r_shape) = broadcasting_matmul_op::<A>(lhs.shape(), rhs.shape())?;
         let l_broadcast = l_shape == *lhs.shape();
@@ -746,9 +772,10 @@ where
     pub fn iter(&self) -> DTensorIter<'_, A> {
         DTensorIter {
             ptr: self.data.as_ptr(),
-            dim: self.dim.s.clone(),
+            shape_iter: self.dim.s.iter(),
+            // dim: self.dim.s.clone(),
             strides: self.dim.stride.clone(),
-            index: self.dim.shape().first_index(),
+            // index: self.dim.shape().first_index(),
             _marker: PhantomData,
         }
     }
@@ -756,9 +783,9 @@ where
     pub fn into_iter<'a>(self) -> DTensorIter<'a, A> {
         DTensorIter {
             ptr: self.data.as_ptr(),
-            dim: self.dim.s.clone(),
+            shape_iter: self.dim.s.iter(),
             strides: self.dim.stride.clone(),
-            index: self.dim.s.first_index(),
+            //  index: self.dim.s.first_index(),
             _marker: PhantomData,
         }
     }
@@ -1180,5 +1207,17 @@ mod tests {
         let m2 = mat(&[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]);
         let d = m1.matmul(&m2).unwrap();
         println!("{:?}", d);
+    }
+
+    // [[1, 2, 3],
+    //  [2, 4, 6],
+    //   [3, 6, 9]])
+    #[test]
+    fn test_with_shape_fn() {
+        let m1 = DTensor::with_shape_fn(Shape::from_array([3, 3]), |s| {
+            let (i, j) = s.dims2();
+            ((1 + i) * (1 + j)) as u32
+        });
+        println!("{:?}", m1);
     }
 }
