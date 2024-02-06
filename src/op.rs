@@ -179,6 +179,7 @@ where
         }
         for (a, b) in self.iter().zip(other.iter()) {
             if *a != *b {
+                println!("a:{:?},b:{:?}", a, b);
                 return false;
             }
         }

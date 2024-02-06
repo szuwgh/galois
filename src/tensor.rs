@@ -1,11 +1,14 @@
+use std::string::FromUtf16Error;
+
 use crate::op;
 use crate::DTensorIter;
+use crate::FromF32;
 use crate::Shape;
 use crate::ToUsize;
+use crate::UnaryOp;
 use crate::{DTensor, TensorType};
 use half::f16;
 use num_traits::ToPrimitive;
-
 #[derive(Debug)]
 pub enum DType {
     U8,
@@ -60,13 +63,67 @@ macro_rules! impl_tousize {
     };
 }
 
+#[macro_export]
+macro_rules! impl_fromf32 {
+    ($($e:ident),*) => {
+        $(impl FromF32 for $e {
+            fn from_f32(a: f32) -> Self {
+                a as $e
+            }
+        })*
+    };
+}
+
+#[macro_export]
+macro_rules! impl_no_unary_op {
+    ($($e:ident),*) => {
+        $(impl UnaryOp for $e {
+                fn _exp(&self) -> Self {
+                   todo!()
+                }
+                fn _ln(&self) -> Self {
+                    todo!()
+                }
+                fn _sin(&self) -> Self {
+                    todo!()
+                }
+                fn _cos(&self) -> Self {
+                    todo!()
+                }
+                fn _tanh(&self) -> Self {
+                    todo!()
+                }
+                fn _neg(&self) -> Self {
+                    todo!()
+                }
+                fn _recip(&self) -> Self {
+                    todo!()
+                }
+                fn _sqr(&self) -> Self {
+                    todo!()
+                }
+                fn _sqrt(&self) -> Self {
+                    todo!()
+                }
+        })*
+    };
+}
+
 impl ToUsize for f16 {
     fn as_usize(&self) -> usize {
         self.to_usize().unwrap()
     }
 }
 
+impl FromF32 for f16 {
+    fn from_f32(a: f32) -> Self {
+        f16::from_f32(a)
+    }
+}
+
 impl_tousize!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_fromf32!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_no_unary_op!(u8, u16, u32, u64, i8, i16, i32, i64);
 
 impl TensorType for u8 {}
 impl TensorType for u16 {}

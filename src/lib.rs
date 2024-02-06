@@ -1,7 +1,7 @@
 #![feature(concat_idents)]
 mod broadcast;
 pub mod error;
-mod op;
+pub mod op;
 pub mod shape;
 mod simd;
 use crate::broadcast::broadcasting_matmul_op;
@@ -14,6 +14,7 @@ pub use crate::shape::{Axis, Shape};
 use crate::zip::Zip;
 use core::ptr::{self, NonNull};
 
+use op::UnaryOp;
 use rawpointer::PointerExt;
 use shape::ShapeIter;
 use std::fmt;
@@ -27,6 +28,10 @@ pub trait ToUsize {
     fn as_usize(&self) -> usize;
 }
 
+pub trait FromF32 {
+    fn from_f32(a: f32) -> Self;
+}
+
 pub trait TensorType:
     std::cmp::PartialOrd
     + fmt::Debug
@@ -36,6 +41,8 @@ pub trait TensorType:
     + Sync
     + Send
     + ToUsize
+    + FromF32
+    + UnaryOp
     + 'static
 {
     #[inline(always)]
@@ -559,6 +566,14 @@ where
         self.dim.is_contiguous()
     }
 
+    pub fn sqrt(&self) -> Self
+    where
+        A: UnaryOp,
+    {
+        let v = self.as_slice().iter().map(|x| x._sqrt()).collect();
+        DTensor::from_vec(v, self.dim().shape().clone())
+    }
+
     pub fn broadcast_with(&self, s: &Shape) -> GResult<DTensor<A>> {
         let broadcast_dim = self.dim().broadcast_with(s)?;
         Ok(DTensor {
@@ -622,7 +637,7 @@ where
         Ok(Self::from_vec(c, c_shape))
     }
 
-    pub fn reshape(self, s: Shape) -> DTensor<A> {
+    pub fn into_reshape(self, s: Shape) -> DTensor<A> {
         if self.dim.shape().elem_count() != s.elem_count() {
             panic!(
                 "ndarray: incompatible shapes in reshape, attempted from: {:?}, to: {:?}",
@@ -643,7 +658,28 @@ where
         }
     }
 
-    fn transpose(self, d1: usize, d2: usize) -> GResult<DTensor<A>> {
+    pub fn reshape(&self, s: Shape) -> DTensor<A> {
+        if self.dim.shape().elem_count() != s.elem_count() {
+            panic!(
+                "ndarray: incompatible shapes in reshape, attempted from: {:?}, to: {:?}",
+                self.dim.shape().as_slice(),
+                s.as_slice()
+            )
+        }
+        if self.dim().is_contiguous() {
+            let stride = s.strides();
+            Self {
+                data: self.data.as_ref(),
+                dim: Dim { s, stride },
+            }
+        } else {
+            let mut new_tensor = Self::zeros(s);
+            copy_strided_src(self.as_slice(), new_tensor.as_slice_mut(), 0, self.dim());
+            new_tensor
+        }
+    }
+
+    fn into_transpose(self, d1: usize, d2: usize) -> GResult<DTensor<A>> {
         if d1 > self.size() {
             return Err(GError::DimOutOfRange {
                 shape: self.dim().shape().clone(),
@@ -694,10 +730,10 @@ where
         } else {
             let args: Vec<DTensor<A>> = ts
                 .iter()
-                .map(|a| a.as_ref().view().transpose(0, dim))
+                .map(|a| a.as_ref().view().into_transpose(0, dim))
                 .collect::<GResult<Vec<DTensor<A>>>>()?;
             let cat = Self::cat0(&args)?;
-            cat.transpose(0, dim)
+            cat.into_transpose(0, dim)
         }
     }
 
@@ -1107,7 +1143,7 @@ mod tests {
             println!("v:{:?}", *v);
         }
 
-        let m1 = m.transpose(0, 1).unwrap();
+        let m1 = m.into_transpose(0, 1).unwrap();
 
         for v in m1.iter() {
             println!("v1:{:?}", *v);
@@ -1150,7 +1186,7 @@ mod tests {
     #[test]
     fn test_transpose() {
         let m = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
-        let m1 = m.transpose(1, 0).unwrap();
+        let m1 = m.into_transpose(1, 0).unwrap();
         println!("m1:{:?}", m1);
     }
 
@@ -1219,5 +1255,13 @@ mod tests {
             ((1 + i) * (1 + j)) as u32
         });
         println!("{:?}", m1);
+    }
+
+    #[test]
+    fn test_sqrt() {
+        let m1 = cube(&[[[4.0, 16.0], [3.0, 4.0]], [[4.0, 9.0], [36.0, 81.0]]]);
+        let s = m1.sqrt();
+        println!("{:?}", m1);
+        println!("{:?}", s);
     }
 }
