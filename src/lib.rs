@@ -32,6 +32,10 @@ pub trait FromF32 {
     fn from_f32(a: f32) -> Self;
 }
 
+pub trait FromF64 {
+    fn from_f64(a: f64) -> Self;
+}
+
 pub trait TensorType:
     std::cmp::PartialOrd
     + fmt::Debug
@@ -42,6 +46,7 @@ pub trait TensorType:
     + Send
     + ToUsize
     + FromF32
+    + FromF64
     + UnaryOp
     + 'static
 {
@@ -206,6 +211,19 @@ impl<P> RawData<P> {
             RawData::Ref(v) => RawData::Ref(RawRef {
                 ptr: v.ptr,
                 len: v.len,
+            }),
+        };
+    }
+
+    pub(crate) fn offset(&self, i: usize) -> RawData<P> {
+        return match self {
+            RawData::Own(v) => RawData::Ref(RawRef {
+                ptr: unsafe { v.ptr.offset(i as isize) },
+                len: v.len - i,
+            }),
+            RawData::Ref(v) => RawData::Ref(RawRef {
+                ptr: unsafe { v.ptr.offset(i as isize) },
+                len: v.len - i,
             }),
         };
     }
@@ -377,6 +395,15 @@ impl<A> MemoryDevice<A> {
     pub(crate) fn as_ptr(&self) -> NonNull<A> {
         return match self {
             MemoryDevice::Cpu(v) => v.as_ptr(),
+            MemoryDevice::Gpu() => {
+                todo!()
+            }
+        };
+    }
+
+    pub(crate) fn offset(&self, i: usize) -> MemoryDevice<A> {
+        return match self {
+            MemoryDevice::Cpu(v) => MemoryDevice::Cpu(v.offset(i)),
             MemoryDevice::Gpu() => {
                 todo!()
             }
@@ -572,6 +599,71 @@ where
     {
         let v = self.as_slice().iter().map(|x| x._sqrt()).collect();
         DTensor::from_vec(v, self.dim().shape().clone())
+    }
+
+    pub fn chunk(&self, chunks: usize, dim: usize) -> GResult<Vec<Self>> {
+        let size = self.dim().shape().as_slice()[dim];
+        if size < chunks {
+            (0..size).map(|i| self.narrow(dim, i, 1)).collect()
+        } else {
+            let chunk_size = size / chunks;                                                                                    
+            let cnt_additional = size % chunks;
+            let mut tensors = vec![];
+            let mut sum_chunk_size = 0;
+            for i in 0..chunks {
+                let chunk_size = if i < cnt_additional {
+                    chunk_size + 1
+                } else {
+                    chunk_size
+                };
+                let tensor = self.narrow(dim, sum_chunk_size, chunk_size)?;
+                tensors.push(tensor);
+                sum_chunk_size += chunk_size
+            }
+            Ok(tensors)
+        }
+    }
+
+    pub fn narrow(&self, dim: usize, start: usize, len: usize) -> GResult<Self> {
+        let dims = self.shape().as_slice();
+        // let dim = dim.to_index(self.shape(), "narrow")?;
+        let err = |msg| {
+            Err::<(), _>(GError::NarrowInvalidArgs {
+                shape: self.shape().clone(),
+                dim,
+                start,
+                len,
+                msg,
+            })
+        };
+        if start > dims[dim] {
+            err("start > dim_len")?
+        }
+        if start.saturating_add(len) > dims[dim] {
+            err("start + len > dim_len")?
+        }
+        if start == 0 && dims[dim] == len {
+            Ok(self.clone())
+        } else {
+            let new_dim = self.dim.narrow(dim, start, len)?;
+            let offset = self.dim().stride()[dim] * start;
+            Ok(DTensor {
+                data: self.data.offset(offset),
+                dim: new_dim,
+            })
+            //let op = BackpropOp::new1(self, |t| Op::Narrow(t, dim, start, len));
+            // let layout = self.layout().narrow(dim, start, len)?;
+            // let tensor_ = Tensor_ {
+            //     id: TensorId::new(),
+            //     storage: self.storage.clone(),
+            //     layout,
+            //     op,
+            //     is_variable: false,
+            //     dtype: self.dtype,
+            //     device: self.device.clone(),
+            // };
+            //  Ok(Tensor(Arc::new(tensor_)))
+        }
     }
 
     pub fn broadcast_with(&self, s: &Shape) -> GResult<DTensor<A>> {
@@ -1263,5 +1355,31 @@ mod tests {
         let s = m1.sqrt();
         println!("{:?}", m1);
         println!("{:?}", s);
+    }
+
+    #[test]
+    fn test_narrow() -> GResult<()> {
+        let a = mat(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
+        let b = a.narrow(0, 0, 2)?;
+        println!("b:{:?}", b);
+
+        let c = a.narrow(1, 1, 2)?;
+        println!("c:{:?}", c);
+        Ok(())
+    }
+
+    #[test]
+    fn test_chunk() -> GResult<()> {
+        let a = mat(&[[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]);
+        let b = a.chunk(4, 0)?;
+        for i in b {
+            println!("b:{:?}", i);
+        }
+
+        let c = a.chunk(4, 1)?;
+        for i in c {
+            println!("c:{:?}", i);
+        }
+        Ok(())
     }
 }

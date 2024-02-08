@@ -56,6 +56,32 @@ impl Dim {
         })
     }
 
+    pub(crate) fn narrow(&self, dim: usize, start: usize, len: usize) -> GResult<Self> {
+        let dims = self.dims();
+        if dim >= dims.len() {
+            return Err(GError::DimOutOfRange {
+                shape: self.s.clone(),
+                dim: dim,
+                op: "narrow",
+            });
+        }
+        if start + len > dims[dim] {
+            return Err(GError::NarrowInvalidArgs {
+                shape: self.s.clone(),
+                dim,
+                start,
+                len,
+                msg: "start + len > dim_len",
+            });
+        }
+        let mut dims = dims.to_vec();
+        dims[dim] = len;
+        Ok(Self {
+            s: Shape::from_vec(dims),
+            stride: self.stride.clone(),
+        })
+    }
+
     pub fn transpose(&self, d1: usize, d2: usize) -> GResult<Dim> {
         let rank = self.s.size();
         if rank <= d1 || rank <= d2 {

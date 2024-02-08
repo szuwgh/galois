@@ -49,6 +49,15 @@ pub enum GError {
         bmnk: (usize, usize, usize, usize),
         msg: &'static str,
     },
+
+    #[error("narrow invalid args {msg}: {shape:?}, dim: {dim}, start: {start}, len:{len}")]
+    NarrowInvalidArgs {
+        shape: Shape,
+        dim: usize,
+        start: usize,
+        len: usize,
+        msg: &'static str,
+    },
 }
 
 impl From<&str> for GError {

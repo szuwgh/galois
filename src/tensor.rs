@@ -3,6 +3,7 @@ use std::string::FromUtf16Error;
 use crate::op;
 use crate::DTensorIter;
 use crate::FromF32;
+use crate::FromF64;
 use crate::Shape;
 use crate::ToUsize;
 use crate::UnaryOp;
@@ -24,34 +25,6 @@ pub enum DType {
     F64,
 }
 
-// pub enum TensorValue<'a> {
-//     U8(&'a mut u8),
-//     U16(&'a mut u16),
-//     U32(&'a mut u32),
-//     U64(&'a mut u64),
-//     I8(&'a mut i8),
-//     I16(&'a mut i16),
-//     I32(&'a mut i32),
-//     I64(&'a mut i64),
-//     F16(&'a mut f16),
-//     F32(&'a mut f32),
-//     F64(&'a mut f64),
-// }
-
-// pub enum TensorIter<'a> {
-//     U8(DTensorIter<'a, u8>),
-//     U16(DTensorIter<'a, u16>),
-//     U32(DTensorIter<'a, u32>),
-//     U64(DTensorIter<'a, u64>),
-//     I8(DTensorIter<'a, i8>),
-//     I16(DTensorIter<'a, i16>),
-//     I32(DTensorIter<'a, i32>),
-//     I64(DTensorIter<'a, i64>),
-//     F16(DTensorIter<'a, f16>),
-//     F32(DTensorIter<'a, f32>),
-//     F64(DTensorIter<'a, f64>),
-// }
-
 #[macro_export]
 macro_rules! impl_tousize {
     ($($e:ident),*) => {
@@ -68,6 +41,17 @@ macro_rules! impl_fromf32 {
     ($($e:ident),*) => {
         $(impl FromF32 for $e {
             fn from_f32(a: f32) -> Self {
+                a as $e
+            }
+        })*
+    };
+}
+
+#[macro_export]
+macro_rules! impl_fromf64 {
+    ($($e:ident),*) => {
+        $(impl FromF64 for $e {
+            fn from_f64(a: f64) -> Self {
                 a as $e
             }
         })*
@@ -121,8 +105,15 @@ impl FromF32 for f16 {
     }
 }
 
+impl FromF64 for f16 {
+    fn from_f64(a: f64) -> Self {
+        f16::from_f64(a)
+    }
+}
+
 impl_tousize!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 impl_fromf32!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_fromf64!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 impl_no_unary_op!(u8, u16, u32, u64, i8, i16, i32, i64);
 
 impl TensorType for u8 {}
@@ -166,6 +157,22 @@ impl Tensor {
             Tensor::I64(_) => DType::I64,
             Tensor::F64(_) => DType::F64,
             Tensor::U64(_) => DType::U64,
+        };
+    }
+
+    pub fn shape(&self) -> &Shape {
+        return match self {
+            Tensor::U8(t) => t.shape(),
+            Tensor::I8(t) => t.shape(),
+            Tensor::I16(t) => t.shape(),
+            Tensor::U16(t) => t.shape(),
+            Tensor::F16(t) => t.shape(),
+            Tensor::F32(t) => t.shape(),
+            Tensor::I32(t) => t.shape(),
+            Tensor::U32(t) => t.shape(),
+            Tensor::I64(t) => t.shape(),
+            Tensor::F64(t) => t.shape(),
+            Tensor::U64(t) => t.shape(),
         };
     }
 
