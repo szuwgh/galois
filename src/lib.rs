@@ -589,6 +589,22 @@ where
         &self.dim
     }
 
+    pub fn single_dim(&self, dim: usize) -> GResult<usize> {
+        let s = self.shape().as_slice();
+        if dim > s.len() {
+            return Err(GError::DimOutOfRange {
+                shape: self.shape().clone(),
+                dim: dim,
+                op: "single_dim",
+            });
+        }
+        Ok(s[dim])
+    }
+
+    pub fn elem_count(&self) -> usize {
+        self.shape().elem_count()
+    }
+
     pub fn is_contiguous(&self) -> bool {
         self.dim.is_contiguous()
     }
@@ -606,7 +622,7 @@ where
         if size < chunks {
             (0..size).map(|i| self.narrow(dim, i, 1)).collect()
         } else {
-            let chunk_size = size / chunks;                                                                                    
+            let chunk_size = size / chunks;
             let cnt_additional = size % chunks;
             let mut tensors = vec![];
             let mut sum_chunk_size = 0;
@@ -1380,6 +1396,16 @@ mod tests {
         for i in c {
             println!("c:{:?}", i);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_clone() -> GResult<()> {
+        let mut a = mat(&[[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]);
+        let b = a.clone();
+        a.as_slice_mut()[1] = 100;
+        println!("{:?}", a);
+        println!("{:?}", b);
         Ok(())
     }
 }
