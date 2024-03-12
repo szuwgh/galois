@@ -32,9 +32,11 @@ macro_rules! impl_binary_op {
             fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
                 let lhs = self;
                 if lhs.shape() == rhs.shape() {
+                    println!("shape same");
                     lhs.iter().zip2(rhs.iter()).ops(convert_iopsf(A::$mth));
                     lhs
                 } else {
+                    println!("shape not same");
                     let broadcast_shape =
                         broadcasting_binary_op::<A>(lhs.shape(), rhs.shape()).unwrap();
 
@@ -127,11 +129,36 @@ macro_rules! impl_binary_op {
             type Output = DTensor<A>;
             fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
                 if self.shape() == rhs.shape() {
+                    println!("shape same");
                     self.iter()
                         .zip2(rhs.iter())
                         .map(clone_opsf(A::$mth))
                         .collect_tensor(rhs.dim.shape().clone())
                 } else {
+                    println!("shape not same");
+                    let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
+                    lhs.iter()
+                        .zip2(rhs2.iter())
+                        .map(clone_opsf(A::$mth))
+                        .collect_tensor(lhs.dim.shape().clone())
+                }
+            }
+        }
+
+        impl<A> std::ops::$trt<DTensor<A>> for &DTensor<A>
+        where
+            A: std::ops::$trt<A, Output = A> + TensorType,
+        {
+            type Output = DTensor<A>;
+            fn $mth(self, rhs: DTensor<A>) -> Self::Output {
+                if self.shape() == rhs.shape() {
+                    println!("shape same");
+                    self.iter()
+                        .zip2(rhs.iter())
+                        .map(clone_opsf(A::$mth))
+                        .collect_tensor(rhs.dim.shape().clone())
+                } else {
+                    println!("shape not same");
                     let (lhs, rhs2) = general_broadcasting::<A>(&self, &rhs).unwrap();
                     lhs.iter()
                         .zip2(rhs2.iter())

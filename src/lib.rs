@@ -350,8 +350,8 @@ use std::marker::PhantomData;
 pub struct DTensorIter<'a, A> {
     ptr: NonNull<A>,
     // dim: Shape,
-    strides: Box<[usize]>,
-    shape_iter: ShapeIter,
+    strides: &'a [usize],
+    shape_iter: ShapeIter<'a>,
     // index: Option<Shape>,
     _marker: PhantomData<&'a A>,
 }
@@ -360,14 +360,8 @@ impl<'a, A> Iterator for DTensorIter<'a, A> {
     type Item = &'a mut A;
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        // let index = match self.index {
-        //     None => return None,
-        //     Some(ref ix) => ix.clone(),
-        // };
-
-        // self.index = self.dim.next_for(index);
         let index = self.shape_iter.next()?;
-        let offset = Shape::stride_offset(&index, &self.strides);
+        let offset = Shape::stride_offset(index.as_slice(), self.strides);
         let ptr = unsafe { self.ptr.offset(offset) }.as_ptr();
         unsafe { Some(&mut *ptr) }
     }
@@ -535,7 +529,7 @@ where
 
     pub fn with_shape_fn<F>(d: Shape, mut f: F) -> Self
     where
-        F: FnMut(Shape) -> A,
+        F: FnMut(&Shape) -> A,
     {
         let iter = d.iter();
         let size = d.elem_count();
@@ -617,6 +611,14 @@ where
         DTensor::from_vec(v, self.dim().shape().clone())
     }
 
+    pub fn into_sqrt(mut self) -> Self
+    where
+        A: UnaryOp,
+    {
+        self.as_slice_mut().iter_mut().for_each(|v| *v = v._sqrt());
+        self
+    }
+
     pub fn chunk(&self, chunks: usize, dim: usize) -> GResult<Vec<Self>> {
         let size = self.dim().shape().as_slice()[dim];
         if size < chunks {
@@ -642,7 +644,6 @@ where
 
     pub fn narrow(&self, dim: usize, start: usize, len: usize) -> GResult<Self> {
         let dims = self.shape().as_slice();
-        // let dim = dim.to_index(self.shape(), "narrow")?;
         let err = |msg| {
             Err::<(), _>(GError::NarrowInvalidArgs {
                 shape: self.shape().clone(),
@@ -667,18 +668,6 @@ where
                 data: self.data.offset(offset),
                 dim: new_dim,
             })
-            //let op = BackpropOp::new1(self, |t| Op::Narrow(t, dim, start, len));
-            // let layout = self.layout().narrow(dim, start, len)?;
-            // let tensor_ = Tensor_ {
-            //     id: TensorId::new(),
-            //     storage: self.storage.clone(),
-            //     layout,
-            //     op,
-            //     is_variable: false,
-            //     dtype: self.dtype,
-            //     device: self.device.clone(),
-            // };
-            //  Ok(Tensor(Arc::new(tensor_)))
         }
     }
 
@@ -918,21 +907,21 @@ where
             ptr: self.data.as_ptr(),
             shape_iter: self.dim.s.iter(),
             // dim: self.dim.s.clone(),
-            strides: self.dim.stride.clone(),
+            strides: self.dim.stride(),
             // index: self.dim.shape().first_index(),
             _marker: PhantomData,
         }
     }
 
-    pub fn into_iter<'a>(self) -> DTensorIter<'a, A> {
-        DTensorIter {
-            ptr: self.data.as_ptr(),
-            shape_iter: self.dim.s.iter(),
-            strides: self.dim.stride.clone(),
-            //  index: self.dim.s.first_index(),
-            _marker: PhantomData,
-        }
-    }
+    // pub fn into_iter<'a>(self) -> DTensorIter<'a, A> {
+    //     DTensorIter {
+    //         ptr: self.data.as_ptr(),
+    //         shape_iter: self.dim.s.iter(),
+    //         strides: self.dim.stride.clone(),
+    //         //  index: self.dim.s.first_index(),
+    //         _marker: PhantomData,
+    //     }
+    // }
 }
 
 struct MatMul(usize, usize, usize, usize);

@@ -172,10 +172,11 @@ impl Shape {
         self.0.iter().product()
     }
 
-    pub fn iter(&self) -> ShapeIter {
+    pub fn iter<'a>(&'a self) -> ShapeIter<'a> {
         ShapeIter {
-            dim: self.clone(),
-            index: self.first_index(),
+            dim: self,
+            index: self.first_index().unwrap(),
+            first: true,
         }
     }
 
@@ -221,23 +222,45 @@ pub fn select_axis(src: &[usize], a: Axis) -> Vec<usize> {
     dst
 }
 
-pub struct ShapeIter {
-    dim: Shape,
-    index: Option<Shape>,
+use core::marker::PhantomData;
+pub struct ShapeIter<'a> {
+    dim: &'a Shape,
+    index: Shape,
+    first: bool,
 }
 
-impl Iterator for ShapeIter {
-    type Item = Shape;
-    fn next(&mut self) -> Option<Self::Item> {
-        let index = match self.index.take() {
-            None => return None,
-            Some(ix) => ix,
-        };
-        let cur_shape = index.clone();
-        self.index = self.dim.next_for(index);
-        Some(cur_shape)
+impl<'a> ShapeIter<'a> {
+    pub(crate) fn next(&mut self) -> Option<&Shape> {
+        if self.first {
+            self.first = false;
+            Some(&self.index)
+        } else {
+            match self.dim.next_for(&mut self.index) {
+                Some(()) => Some(&self.index),
+                None => None,
+            }
+        }
+    }
+
+    pub(crate) fn fold<B, F>(mut self, init: B, mut f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, &Shape) -> B,
+    {
+        let mut accum = init;
+        while let Some(x) = self.next() {
+            accum = f(accum, x);
+        }
+        accum
     }
 }
+
+// impl<'a> Iterator for ShapeIter<'a> {
+//     type Item = &'a [usize];
+//     fn next(&mut self) -> Option<Self::Item> {
+//         self.n()
+//     }
+// }
 
 impl Shape {
     pub fn select_axis(&self, a: Axis) -> Shape {
@@ -291,8 +314,7 @@ impl Shape {
     }
 
     #[inline]
-    pub(crate) fn next_for(&self, index: Self) -> Option<Self> {
-        let mut index = index;
+    pub(crate) fn next_for(&self, index: &mut Self) -> Option<()> {
         let mut done = false;
         for (&dim, ix) in zip(self.as_slice(), index.as_slice_mut()).rev() {
             *ix += 1;
@@ -304,16 +326,16 @@ impl Shape {
             }
         }
         if done {
-            Some(index)
+            Some(())
         } else {
             None
         }
     }
 
     #[inline]
-    pub(crate) fn stride_offset(index: &Self, strides: &[usize]) -> isize {
+    pub(crate) fn stride_offset(index: &[usize], strides: &[usize]) -> isize {
         let mut offset = 0;
-        for (&i, &s) in index.as_slice().iter().zip(strides.iter()) {
+        for (&i, &s) in index.iter().zip(strides.iter()) {
             offset += stride_offset(i, s);
         }
         offset
@@ -326,7 +348,9 @@ mod tests {
 
     #[test] //[3, 2]
     fn test_tensor_transpose() {
-        // let d = [4usize, 3, 2, 1];
+        let d = [4usize, 3, 2, 1];
+        let t = d.iter();
+        //  t.fold(init, f)
         // let d2 = d.select_axis(Axis(0));
         // println!("{:?}", d2);
     }
@@ -341,9 +365,9 @@ mod tests {
     #[test]
     fn test_shape_iter() {
         let d = Shape::from_vec(vec![1, 2, 4, 4]);
-        for s in d.iter() {
-            let (a, b, c, d) = s.dims4();
-            println!("a:{},b:{},c:{},c:{}", a, b, c, d);
+        let mut i = d.iter();
+        while let Some(x) = i.next() {
+            println!("{:?}", x);
         }
     }
 }
