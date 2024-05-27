@@ -1,7 +1,7 @@
 use super::error::{GError, ShapeErrorKind};
 use crate::shape::Dim;
 use crate::TensorType;
-use crate::{error::GResult, shape::Shape, DTensor};
+use crate::{error::GResult, shape::Shape, Tensor};
 #[macro_export]
 macro_rules! copy {
     ($des:expr, $src:expr) => {
@@ -99,9 +99,9 @@ pub fn broadcasting_matmul_op<A>(lhs: &Shape, rhs: &Shape) -> GResult<(Shape, Sh
 // 从末尾开始算起的维度。另外一种情况是，如果两个张量的后缘维度不同，则有一方的长度为1
 // https://numpy.org/doc/stable/user/basics.broadcasting.html#general-broadcasting-rules
 pub fn general_broadcasting<A>(
-    t1: &DTensor<A>,
-    t2: &DTensor<A>,
-) -> GResult<(DTensor<A>, DTensor<A>)>
+    t1: &Tensor<A>,
+    t2: &Tensor<A>,
+) -> GResult<(Tensor<A>, Tensor<A>)>
 where
     A: TensorType,
 {
@@ -134,14 +134,14 @@ where
     };
 
     Ok((
-        DTensor {
+        Tensor {
             data: t1.data.as_ref(),
             dim: Dim {
                 s: output.clone(),
                 stride: broadcast_strides3,
             },
         },
-        DTensor {
+        Tensor {
             data: t2.data.as_ref(),
             dim: Dim {
                 s: output.clone(),
@@ -152,7 +152,7 @@ where
 }
 
 mod tests {
-    use crate::DTensor;
+    use crate::Tensor;
 
     use super::super::{arr, cube, mat};
     use super::*;

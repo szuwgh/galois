@@ -222,7 +222,6 @@ pub fn select_axis(src: &[usize], a: Axis) -> Vec<usize> {
     dst
 }
 
-use core::marker::PhantomData;
 pub struct ShapeIter<'a> {
     dim: &'a Shape,
     index: Shape,

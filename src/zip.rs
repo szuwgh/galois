@@ -1,19 +1,19 @@
-use crate::{DTensor, DTensorIter};
+use crate::{Tensor, TensorIter};
 use crate::{Shape, TensorType};
 
 pub struct Zip<'a, A>
 where
     A: TensorType,
 {
-    a: DTensorIter<'a, A>,
-    b: DTensorIter<'a, A>,
+    a: TensorIter<'a, A>,
+    b: TensorIter<'a, A>,
 }
 
 impl<'a, A> Zip<'a, A>
 where
     A: TensorType,
 {
-    pub fn new(a: DTensorIter<'a, A>, b: DTensorIter<'a, A>) -> Zip<'a, A> {
+    pub fn new(a: TensorIter<'a, A>, b: TensorIter<'a, A>) -> Zip<'a, A> {
         Self { a: a, b: b }
     }
 
@@ -60,9 +60,9 @@ where
     pub fn new(i: I, f: F) -> Map<I, F> {
         Self { iter: i, f: f }
     }
-    pub fn collect_tensor(self, dim: Shape) -> DTensor<B> {
+    pub fn collect_tensor(self, dim: Shape) -> Tensor<B> {
         let v: Vec<B> = self.collect();
-        DTensor::from_vec(v, dim)
+        Tensor::from_vec(v, dim)
     }
 }
 

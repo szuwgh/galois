@@ -1,7 +1,7 @@
 use std::ops::Neg;
 
 use super::broadcast::{broadcasting_binary_op, general_broadcasting};
-use super::DTensor;
+use super::Tensor;
 use crate::TensorType;
 use half::f16;
 use num_traits::Float;
@@ -24,12 +24,12 @@ fn clone_opsf<A: Clone, B: Clone, C>(f: impl Fn(A, B) -> C) -> impl FnMut((&mut 
 
 macro_rules! impl_binary_op {
     ($trt:ident, $mth:ident) => {
-        impl<A> std::ops::$trt<&DTensor<A>> for DTensor<A>
+        impl<A> std::ops::$trt<&Tensor<A>> for Tensor<A>
         where
             A: std::ops::$trt<A, Output = A> + TensorType,
         {
-            type Output = DTensor<A>;
-            fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
+            type Output = Tensor<A>;
+            fn $mth(self, rhs: &Tensor<A>) -> Self::Output {
                 let lhs = self;
                 if lhs.shape() == rhs.shape() {
                     println!("shape same");
@@ -74,12 +74,12 @@ macro_rules! impl_binary_op {
             }
         }
 
-        impl<A> std::ops::$trt<DTensor<A>> for DTensor<A>
+        impl<A> std::ops::$trt<Tensor<A>> for Tensor<A>
         where
             A: std::ops::$trt<A, Output = A> + TensorType,
         {
-            type Output = DTensor<A>;
-            fn $mth(self, rhs: DTensor<A>) -> Self::Output {
+            type Output = Tensor<A>;
+            fn $mth(self, rhs: Tensor<A>) -> Self::Output {
                 let lhs = self;
                 if lhs.shape() == rhs.shape() {
                     lhs.iter().zip2(rhs.iter()).ops(convert_iopsf(A::$mth));
@@ -122,12 +122,12 @@ macro_rules! impl_binary_op {
             }
         }
 
-        impl<A> std::ops::$trt<&DTensor<A>> for &DTensor<A>
+        impl<A> std::ops::$trt<&Tensor<A>> for &Tensor<A>
         where
             A: std::ops::$trt<A, Output = A> + TensorType,
         {
-            type Output = DTensor<A>;
-            fn $mth(self, rhs: &DTensor<A>) -> Self::Output {
+            type Output = Tensor<A>;
+            fn $mth(self, rhs: &Tensor<A>) -> Self::Output {
                 if self.shape() == rhs.shape() {
                     println!("shape same");
                     self.iter()
@@ -145,12 +145,12 @@ macro_rules! impl_binary_op {
             }
         }
 
-        impl<A> std::ops::$trt<DTensor<A>> for &DTensor<A>
+        impl<A> std::ops::$trt<Tensor<A>> for &Tensor<A>
         where
             A: std::ops::$trt<A, Output = A> + TensorType,
         {
-            type Output = DTensor<A>;
-            fn $mth(self, rhs: DTensor<A>) -> Self::Output {
+            type Output = Tensor<A>;
+            fn $mth(self, rhs: Tensor<A>) -> Self::Output {
                 if self.shape() == rhs.shape() {
                     println!("shape same");
                     self.iter()
@@ -172,35 +172,35 @@ macro_rules! impl_binary_op {
 
 macro_rules! impl_scalar_op {
     ($trt:ident, $mth:ident, $op:tt) => {
-        impl<A> std::ops::$trt<A> for DTensor<A>
+        impl<A> std::ops::$trt<A> for Tensor<A>
         where
             A: std::ops::$trt<A, Output = A> + TensorType,
         {
-            type Output = DTensor<A>;
+            type Output = Tensor<A>;
             fn $mth(mut self, rhs: A) -> Self::Output {
                 self.as_slice_mut().iter_mut().for_each(|x| *x = *x $op rhs);
                 self
             }
         }
 
-        impl<A> std::ops::$trt<A> for &DTensor<A>
+        impl<A> std::ops::$trt<A> for &Tensor<A>
         where
             A: std::ops::$trt<A, Output = A> + TensorType,
         {
-            type Output = DTensor<A>;
+            type Output = Tensor<A>;
             fn $mth(self, rhs: A) -> Self::Output {
                let v = self.as_slice().iter().map(|x| *x $op rhs).collect();
-               DTensor::from_vec(v, self.dim().shape().clone())
+               Tensor::from_vec(v, self.dim().shape().clone())
             }
         }
     };
 }
 
-impl<A> PartialEq<DTensor<A>> for DTensor<A>
+impl<A> PartialEq<Tensor<A>> for Tensor<A>
 where
     A: TensorType,
 {
-    fn eq(&self, other: &DTensor<A>) -> bool {
+    fn eq(&self, other: &Tensor<A>) -> bool {
         if self.shape() != other.shape() {
             return false;
         }
