@@ -208,6 +208,37 @@ impl<A: TensorType> NdArray for &[A] {
     }
 }
 
+impl<A: TensorType, const N: usize> NdArray for Vec<[A; N]> {
+    fn to_cpu_device(self) -> CpuDevice {
+        let device = match A::DTYPE {
+            DType::F16 => {
+                let data =
+                    RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.capacity());
+                CpuDevice::F16(RawData::Own(data))
+            }
+            DType::F32 => {
+                let data =
+                    RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.capacity());
+                CpuDevice::F32(RawData::Own(data))
+            }
+            DType::F64 => {
+                let data =
+                    RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.capacity());
+                CpuDevice::F64(RawData::Own(data))
+            }
+            _ => {
+                todo!()
+            }
+        };
+        forget(self);
+        return device;
+    }
+
+    fn to_gpu_device() {
+        todo!()
+    }
+}
+
 #[derive(Clone)]
 enum RawData<P> {
     Own(RawPtr<P>),
@@ -572,9 +603,11 @@ impl Tensor {
         let shape = Shape::from_array(dim);
         let ptr = xs.as_mut_ptr();
         let cap = shape.size();
-        forget(xs);
-        let data = RawPtr::from_raw_parts(ptr as *mut A, cap, cap);
-        Tensor::from_raw(data, shape)
+        let data = xs.to_cpu_device();
+        Tensor::from_device(Device::Cpu(data), shape)
+        // forget(xs);
+        // let data = RawPtr::from_raw_parts(ptr as *mut A, cap, cap);
+        // Tensor::from_raw(data, shape)
     }
 
     fn cube<A: TensorType, const M: usize, const N: usize>(mut xs: Vec<[[A; N]; M]>) -> Self {
