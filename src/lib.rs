@@ -4,7 +4,7 @@ pub mod error;
 pub mod op;
 pub mod shape;
 mod simd;
-use crate::broadcast::broadcasting_matmul_op;
+
 mod zip;
 extern crate alloc;
 
@@ -145,6 +145,32 @@ impl Drop for SetLenOnDrop<'_> {
     }
 }
 
+trait Nd: TensorType {
+    fn to_cpu_device(a: Self, size: usize) -> CpuDevice {
+        let mut v = RawPtr::<Self>::with_capacity(size);
+        v.fill(a, size);
+
+        // match Self::DTYPE {
+        //     DType::F16 => CpuDevice::F16(RawData::Own(v)),
+        //     DType::F32 => {
+        //         let mut v = RawPtr::<f32>::with_capacity(size);
+        //         v.fill(a as f32, size);
+        //         CpuDevice::F32(RawData::Own(v))
+        //     }
+        //     DType::F64 => {
+        //         let mut v = RawPtr::<f64>::with_capacity(size);
+        //         v.fill(a as f32, size);
+        //         CpuDevice::F64(RawData::Own(data))
+        //     }
+        //     _ => {
+        //         todo!()
+        //     }
+        // }
+    }
+
+    fn to_gpu_device();
+}
+
 trait NdArray {
     fn to_cpu_device(self) -> CpuDevice;
 
@@ -209,6 +235,37 @@ impl<A: TensorType> NdArray for &[A] {
 }
 
 impl<A: TensorType, const N: usize> NdArray for Vec<[A; N]> {
+    fn to_cpu_device(self) -> CpuDevice {
+        let device = match A::DTYPE {
+            DType::F16 => {
+                let data =
+                    RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.capacity());
+                CpuDevice::F16(RawData::Own(data))
+            }
+            DType::F32 => {
+                let data =
+                    RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.capacity());
+                CpuDevice::F32(RawData::Own(data))
+            }
+            DType::F64 => {
+                let data =
+                    RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.capacity());
+                CpuDevice::F64(RawData::Own(data))
+            }
+            _ => {
+                todo!()
+            }
+        };
+        forget(self);
+        return device;
+    }
+
+    fn to_gpu_device() {
+        todo!()
+    }
+}
+
+impl<A: TensorType, const N: usize, const M: usize> NdArray for Vec<[[A; N]; M]> {
     fn to_cpu_device(self) -> CpuDevice {
         let device = match A::DTYPE {
             DType::F16 => {
@@ -336,6 +393,37 @@ struct RawPtr<P> {
     cap: usize,
 }
 
+impl<A: TensorType> NdArray for RawPtr<A> {
+    fn to_cpu_device(self) -> CpuDevice {
+        let device = match A::DTYPE {
+            DType::F16 => {
+                let data =
+                    RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.cap());
+                CpuDevice::F16(RawData::Own(data))
+            }
+            DType::F32 => {
+                let data =
+                    RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.cap());
+                CpuDevice::F32(RawData::Own(data))
+            }
+            DType::F64 => {
+                let data =
+                    RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.cap());
+                CpuDevice::F64(RawData::Own(data))
+            }
+            _ => {
+                todo!()
+            }
+        };
+        forget(self);
+        return device;
+    }
+
+    fn to_gpu_device() {
+        todo!()
+    }
+}
+
 impl<P> Clone for RawPtr<P> {
     fn clone(&self) -> Self {
         use alloc::alloc::{alloc, handle_alloc_error, Layout};
@@ -415,6 +503,10 @@ impl<P> RawPtr<P> {
         self.len
     }
 
+    fn cap(&self) -> usize {
+        self.cap
+    }
+
     fn from_raw_parts(ptr: *mut P, length: usize, capacity: usize) -> Self {
         unsafe {
             Self {
@@ -452,11 +544,11 @@ impl<P> RawPtr<P> {
 
 use std::marker::PhantomData;
 
-pub struct TensorIter<'a, A> {
-    ptr: NonNull<A>,
+pub struct TensorIter<'a> {
+    device: &'a Device, //NonNull<A>,
     strides: &'a [usize],
     shape_iter: ShapeIter<'a>,
-    _marker: PhantomData<&'a A>,
+    // _marker: PhantomData<&'a>,
 }
 
 impl<'a, A> Iterator for TensorIter<'a, A> {
@@ -590,34 +682,25 @@ impl AsRef<Tensor> for Tensor {
 }
 
 impl Tensor {
-    fn arr<A: TensorType>(mut xs: Vec<A>) -> Self {
+    fn arr<A: TensorType>(xs: Vec<A>) -> Self {
         let dim = [xs.len()];
         let shape = Shape::from_array(dim);
-
         let data = xs.to_cpu_device();
         Tensor::from_device(Device::Cpu(data), shape)
     }
 
-    fn mat<A: TensorType, const N: usize>(mut xs: Vec<[A; N]>) -> Self {
+    fn mat<A: TensorType, const N: usize>(xs: Vec<[A; N]>) -> Self {
         let dim = [xs.len(), N];
         let shape = Shape::from_array(dim);
-        let ptr = xs.as_mut_ptr();
-        let cap = shape.size();
         let data = xs.to_cpu_device();
         Tensor::from_device(Device::Cpu(data), shape)
-        // forget(xs);
-        // let data = RawPtr::from_raw_parts(ptr as *mut A, cap, cap);
-        // Tensor::from_raw(data, shape)
     }
 
     fn cube<A: TensorType, const M: usize, const N: usize>(mut xs: Vec<[[A; N]; M]>) -> Self {
         let dim = [xs.len(), M, N];
         let shape = Shape::from_array(dim);
-        let ptr = xs.as_mut_ptr();
-        let cap = shape.size();
-        forget(xs);
-        let data = RawPtr::from_raw_parts(ptr as *mut A, cap, cap);
-        Tensor::from_raw(data, shape)
+        let data = xs.to_cpu_device();
+        Tensor::from_device(Device::Cpu(data), shape)
     }
 
     fn from_device(data: Device, s: Shape) -> Self {
@@ -652,62 +735,50 @@ impl Tensor {
         }
     }
 
-    pub fn from_elem<A>(a: A, s: Shape) -> Self
+    pub fn from_elem<A: TensorType>(a: A, s: Shape) -> Self
     where
         A: Clone,
     {
-        let mut v = RawPtr::with_capacity(s.size());
-        v.fill(a, s.size());
-        let stride = s.strides();
-        Self {
-            data: MemoryDevice::Cpu(RawData::Own(v)),
-            dim: Dim { s, stride },
-        }
+        let size = s.size();
+        let mut v = RawPtr::<A>::with_capacity(size);
+        v.fill(a, size);
+        Tensor::from_device(Device::Cpu(v.to_cpu_device()), s)
     }
 
-    pub fn with_shape(v: Vec<A>, d: Shape) -> Self {
-        Self::from_vec(v, d)
+    // pub fn with_shape<A: TensorType>(v: Vec<A>, d: Shape) -> Self {
+    //     Self::from_vec(v, d)
+    // }
+
+    // pub fn with_shape_fn<F>(d: Shape, mut f: F) -> Self
+    // where
+    //     F: FnMut(&Shape) -> A,
+    // {
+    //     let iter = d.iter();
+    //     let size = d.elem_count();
+    //     let mut result = Vec::with_capacity(size);
+    //     let mut out_ptr = result.as_mut_ptr();
+    //     let mut len = 0;
+    //     iter.fold((), |(), elt| unsafe {
+    //         ptr::write(out_ptr, f(elt));
+    //         len += 1;
+    //         result.set_len(len);
+    //         out_ptr = out_ptr.offset(1);
+    //     });
+    //     Self::with_shape(result, d)
+    // }
+
+    fn from_vec<A: TensorType>(v: Vec<A>, s: Shape) -> Self {
+        let data = v.to_cpu_device();
+        Tensor::from_device(Device::Cpu(data), s)
     }
 
-    pub fn with_shape_fn<F>(d: Shape, mut f: F) -> Self
-    where
-        F: FnMut(&Shape) -> A,
-    {
-        let iter = d.iter();
-        let size = d.elem_count();
-        let mut result = Vec::with_capacity(size);
-        let mut out_ptr = result.as_mut_ptr();
-        let mut len = 0;
-        iter.fold((), |(), elt| unsafe {
-            ptr::write(out_ptr, f(elt));
-            len += 1;
-            result.set_len(len);
-            out_ptr = out_ptr.offset(1);
-        });
-        Self::with_shape(result, d)
-    }
+    // pub fn as_slice<A>(&self) -> &[A] {
+    //     self.data.as_slice()
+    // }
 
-    fn from_vec<A>(v: Vec<A>, s: Shape) -> Self {
-        let stride = s.strides();
-        let t = Self {
-            data: MemoryDevice::Cpu(RawData::Own(RawPtr::from_raw_parts(
-                v.as_ptr() as *mut A,
-                v.len(),
-                v.capacity(),
-            ))),
-            dim: Dim { s, stride },
-        };
-        forget(v);
-        t
-    }
-
-    pub fn as_slice<A>(&self) -> &[A] {
-        self.data.as_slice()
-    }
-
-    pub fn as_slice_mut(&mut self) -> &mut [A] {
-        self.data.as_slice_mut()
-    }
+    // pub fn as_slice_mut(&mut self) -> &mut [A] {
+    //     self.data.as_slice_mut()
+    // }
 
     pub fn zeros<A: TensorType>(d: Shape) -> Self {
         Self::from_elem(A::zero(), d)
@@ -745,18 +816,19 @@ impl Tensor {
         self.dim.is_contiguous()
     }
 
-    pub fn sqrt(&self) -> Self
-    where
-        A: UnaryOp,
-    {
-        let v = self.as_slice().iter().map(|x| x._sqrt()).collect();
-        Tensor::from_vec(v, self.dim().shape().clone())
+    pub fn sqrt(&self) -> Self {
+        match &self.data {
+            Device::Cpu(d) => {
+                let v = self.as_slice().iter().map(|x| x._sqrt()).collect();
+                Tensor::from_vec(v, self.dim().shape().clone())
+            }
+            Device::Gpu() => {
+                todo!()
+            }
+        }
     }
 
-    pub fn into_sqrt(mut self) -> Self
-    where
-        A: UnaryOp,
-    {
+    pub fn into_sqrt(mut self) -> Self {
         self.as_slice_mut().iter_mut().for_each(|v| *v = v._sqrt());
         self
     }
@@ -821,25 +893,22 @@ impl Tensor {
         })
     }
 
-    pub fn matmul(&self, rhs: &Tensor) -> GResult<Tensor> {
-        let lhs = self;
-        let (l_shape, r_shape) = broadcasting_matmul_op::<A>(lhs.shape(), rhs.shape())?;
-        let l_broadcast = l_shape == *lhs.shape();
-        let r_broadcast = r_shape == *rhs.shape();
-        match (l_broadcast, r_broadcast) {
-            (true, true) => lhs._matmul(rhs),
-            (false, true) => lhs.broadcast_with(&l_shape)?._matmul(rhs),
-            (true, false) => lhs._matmul(&rhs.broadcast_with(&r_shape)?),
-            (false, false) => lhs
-                .broadcast_with(&l_shape)?
-                ._matmul(&rhs.broadcast_with(&r_shape)?),
-        }
-    }
+    // pub fn matmul(&self, rhs: &Tensor) -> GResult<Tensor> {
+    //     let lhs = self;
+    //     let (l_shape, r_shape) = broadcasting_matmul_op::<A>(lhs.shape(), rhs.shape())?;
+    //     let l_broadcast = l_shape == *lhs.shape();
+    //     let r_broadcast = r_shape == *rhs.shape();
+    //     match (l_broadcast, r_broadcast) {
+    //         (true, true) => lhs._matmul(rhs),
+    //         (false, true) => lhs.broadcast_with(&l_shape)?._matmul(rhs),
+    //         (true, false) => lhs._matmul(&rhs.broadcast_with(&r_shape)?),
+    //         (false, false) => lhs
+    //             .broadcast_with(&l_shape)?
+    //             ._matmul(&rhs.broadcast_with(&r_shape)?),
+    //     }
+    // }
 
-    pub fn _matmul(&self, rhs: &Tensor) -> GResult<Tensor>
-    where
-        A: 'static,
-    {
+    pub fn _matmul(&self, rhs: &Tensor) -> GResult<Tensor> {
         let l_dim = self.shape().as_slice();
         let r_dim: &[usize] = rhs.shape().as_slice();
         let dim = l_dim.len();
@@ -940,7 +1009,13 @@ impl Tensor {
         })
     }
 
-    pub fn pad(&self, dim: usize, left: usize, right: usize, elem: A) -> GResult<Tensor> {
+    pub fn pad<A: TensorType>(
+        &self,
+        dim: usize,
+        left: usize,
+        right: usize,
+        elem: A,
+    ) -> GResult<Tensor> {
         if left == 0 && right == 0 {
             Ok(self.clone())
         } else if left == 0 {
@@ -1036,7 +1111,7 @@ impl Tensor {
             len: self.data.len() - offset,
         };
         Tensor {
-            data: MemoryDevice::Cpu(RawData::Ref(raw_ref)),
+            data: Device::Cpu(RawData::Ref(raw_ref)),
             dim: Dim {
                 s: axis_dim,
                 stride: s.into_boxed_slice(),
@@ -1300,7 +1375,7 @@ impl<T> Drop for RawPtr<T> {
     }
 }
 
-impl<A: TensorType> fmt::Debug for Tensor {
+impl fmt::Debug for Tensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         format_tensor(self.view(), 0, f)
     }

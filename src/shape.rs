@@ -45,16 +45,16 @@ impl Dim {
         self.s.as_slice()
     }
 
-    pub fn broadcast_with(&self, s: &Shape) -> GResult<Dim> {
-        let stride = match crate::broadcast::upcast(s, &self.s, &self.stride) {
-            Some(st) => st,
-            None => return Err(GError::ShapeError(ShapeErrorKind::IncompatibleShape)),
-        };
-        Ok(Dim {
-            s: s.clone(),
-            stride: stride,
-        })
-    }
+    // pub fn broadcast_with(&self, s: &Shape) -> GResult<Dim> {
+    //     let stride = match crate::broadcast::upcast(s, &self.s, &self.stride) {
+    //         Some(st) => st,
+    //         None => return Err(GError::ShapeError(ShapeErrorKind::IncompatibleShape)),
+    //     };
+    //     Ok(Dim {
+    //         s: s.clone(),
+    //         stride: stride,
+    //     })
+    // }
 
     pub(crate) fn narrow(&self, dim: usize, start: usize, len: usize) -> GResult<Self> {
         let dims = self.dims();

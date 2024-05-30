@@ -1,5 +1,5 @@
-use crate::{Tensor, TensorIter};
 use crate::{Shape, TensorType};
+use crate::{Tensor, TensorIter};
 
 pub struct Zip<'a, A>
 where
@@ -60,7 +60,7 @@ where
     pub fn new(i: I, f: F) -> Map<I, F> {
         Self { iter: i, f: f }
     }
-    pub fn collect_tensor(self, dim: Shape) -> Tensor<B> {
+    pub fn collect_tensor(self, dim: Shape) -> Tensor {
         let v: Vec<B> = self.collect();
         Tensor::from_vec(v, dim)
     }
