@@ -15,7 +15,6 @@ use crate::zip::Zip;
 use core::ptr::{self, NonNull};
 
 use op::UnaryOp;
-use rawpointer::PointerExt;
 use shape::ShapeIter;
 use std::fmt;
 use std::mem::forget;
@@ -145,36 +144,10 @@ impl Drop for SetLenOnDrop<'_> {
     }
 }
 
-trait Nd: TensorType {
-    fn to_cpu_device(a: Self, size: usize) -> CpuDevice {
-        let mut v = RawPtr::<Self>::with_capacity(size);
-        v.fill(a, size);
-
-        // match Self::DTYPE {
-        //     DType::F16 => CpuDevice::F16(RawData::Own(v)),
-        //     DType::F32 => {
-        //         let mut v = RawPtr::<f32>::with_capacity(size);
-        //         v.fill(a as f32, size);
-        //         CpuDevice::F32(RawData::Own(v))
-        //     }
-        //     DType::F64 => {
-        //         let mut v = RawPtr::<f64>::with_capacity(size);
-        //         v.fill(a as f32, size);
-        //         CpuDevice::F64(RawData::Own(data))
-        //     }
-        //     _ => {
-        //         todo!()
-        //     }
-        // }
-    }
-
-    fn to_gpu_device();
-}
-
 trait NdArray {
     fn to_cpu_device(self) -> CpuDevice;
 
-    fn to_gpu_device();
+    fn to_gpu_device(self);
 }
 
 impl<A: TensorType> NdArray for Vec<A> {
@@ -203,8 +176,8 @@ impl<A: TensorType> NdArray for Vec<A> {
         return device;
     }
 
-    fn to_gpu_device() {
-        todo!()
+    fn to_gpu_device(self) {
+        todo!();
     }
 }
 
@@ -229,8 +202,8 @@ impl<A: TensorType> NdArray for &[A] {
         }
     }
 
-    fn to_gpu_device() {
-        todo!()
+    fn to_gpu_device(self) {
+        todo!();
     }
 }
 
@@ -260,8 +233,8 @@ impl<A: TensorType, const N: usize> NdArray for Vec<[A; N]> {
         return device;
     }
 
-    fn to_gpu_device() {
-        todo!()
+    fn to_gpu_device(self) {
+        todo!();
     }
 }
 
@@ -291,7 +264,7 @@ impl<A: TensorType, const N: usize, const M: usize> NdArray for Vec<[[A; N]; M]>
         return device;
     }
 
-    fn to_gpu_device() {
+    fn to_gpu_device(self) {
         todo!()
     }
 }
@@ -419,7 +392,7 @@ impl<A: TensorType> NdArray for RawPtr<A> {
         return device;
     }
 
-    fn to_gpu_device() {
+    fn to_gpu_device(self) {
         todo!()
     }
 }
@@ -544,6 +517,12 @@ impl<P> RawPtr<P> {
 
 use std::marker::PhantomData;
 
+pub enum TItem<'a> {
+    F16(&'a f16),
+    F32(&'a f32),
+    F64(&'a f64),
+}
+
 pub struct TensorIter<'a> {
     device: &'a Device, //NonNull<A>,
     strides: &'a [usize],
@@ -551,22 +530,31 @@ pub struct TensorIter<'a> {
     // _marker: PhantomData<&'a>,
 }
 
-impl<'a, A> Iterator for TensorIter<'a, A> {
-    type Item = &'a mut A;
+impl<'a> Iterator for TensorIter<'a> {
+    type Item = TItem<'a>;
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let index = self.shape_iter.next()?;
         let offset = Shape::stride_offset(index.as_slice(), self.strides);
-        let ptr = unsafe { self.ptr.offset(offset) }.as_ptr();
-        unsafe { Some(&mut *ptr) }
+        match self.device {
+            Device::Cpu(cpu) => match cpu {
+                CpuDevice::F16(v) => {
+                    let ptr = unsafe { v.as_ptr().offset(offset) }.as_ptr();
+                    unsafe { Some(TItem::F16(&mut *ptr)) }
+                }
+                _ => {
+                    todo!()
+                }
+            },
+            Device::Gpu() => {
+                todo!()
+            }
+        }
     }
 }
 
-impl<'a, A> TensorIter<'a, A>
-where
-    A: TensorType,
-{
-    fn zip2(self, t: TensorIter<'a, A>) -> Zip<'a, A>
+impl<'a> TensorIter<'a> {
+    fn zip2(self, t: TensorIter<'a>) -> Zip<'a>
     where
         Self: Sized,
     {

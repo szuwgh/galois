@@ -247,56 +247,56 @@ use num_traits::Float;
 // // Recip,
 // // Sqr,
 // // Sqrt,
-// pub trait UnaryOp {
-//     fn _exp(&self) -> Self;
-//     fn _ln(&self) -> Self;
-//     fn _sin(&self) -> Self;
-//     fn _cos(&self) -> Self;
-//     fn _tanh(&self) -> Self;
-//     fn _neg(&self) -> Self;
-//     fn _recip(&self) -> Self;
-//     fn _sqr(&self) -> Self;
-//     fn _sqrt(&self) -> Self;
-// }
+pub trait UnaryOp {
+    fn _exp(&self) -> Self;
+    fn _ln(&self) -> Self;
+    fn _sin(&self) -> Self;
+    fn _cos(&self) -> Self;
+    fn _tanh(&self) -> Self;
+    fn _neg(&self) -> Self;
+    fn _recip(&self) -> Self;
+    fn _sqr(&self) -> Self;
+    fn _sqrt(&self) -> Self;
+}
 
-// macro_rules! impl_float_unary_op {
-//     ($a:ident) => {
-//         impl UnaryOp for $a {
-//             fn _exp(&self) -> Self {
-//                 self.exp()
-//             }
-//             fn _ln(&self) -> Self {
-//                 self.ln()
-//             }
-//             fn _sin(&self) -> Self {
-//                 self.sin()
-//             }
-//             fn _cos(&self) -> Self {
-//                 self.cos()
-//             }
-//             fn _tanh(&self) -> Self {
-//                 self.tanh()
-//             }
-//             fn _neg(&self) -> Self {
-//                 self.neg()
-//             }
+macro_rules! impl_float_unary_op {
+    ($a:ident) => {
+        impl UnaryOp for $a {
+            fn _exp(&self) -> Self {
+                self.exp()
+            }
+            fn _ln(&self) -> Self {
+                self.ln()
+            }
+            fn _sin(&self) -> Self {
+                self.sin()
+            }
+            fn _cos(&self) -> Self {
+                self.cos()
+            }
+            fn _tanh(&self) -> Self {
+                self.tanh()
+            }
+            fn _neg(&self) -> Self {
+                self.neg()
+            }
 
-//             fn _recip(&self) -> Self {
-//                 self.recip()
-//             }
-//             fn _sqr(&self) -> Self {
-//                 self * self
-//             }
-//             fn _sqrt(&self) -> Self {
-//                 self.sqrt()
-//             }
-//         }
-//     };
-// }
+            fn _recip(&self) -> Self {
+                self.recip()
+            }
+            fn _sqr(&self) -> Self {
+                self * self
+            }
+            fn _sqrt(&self) -> Self {
+                self.sqrt()
+            }
+        }
+    };
+}
 
-// impl_float_unary_op!(f16);
-// impl_float_unary_op!(f32);
-// impl_float_unary_op!(f64);
+impl_float_unary_op!(f16);
+impl_float_unary_op!(f32);
+impl_float_unary_op!(f64);
 
 // impl_binary_op!(Add, add); // +
 // impl_binary_op!(Sub, sub); // -

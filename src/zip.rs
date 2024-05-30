@@ -1,10 +1,7 @@
 use crate::{Shape, TensorType};
 use crate::{Tensor, TensorIter};
 
-pub struct Zip<'a, A>
-where
-    A: TensorType,
-{
+pub struct Zip<'a> {
     a: TensorIter<'a, A>,
     b: TensorIter<'a, A>,
 }
