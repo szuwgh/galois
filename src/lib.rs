@@ -597,15 +597,20 @@ impl CpuDevice {
         &self,
         dim: &Dim,
         rhs: &Self,
-        rhs_dim: &Self,
+        rhs_dim: &Dim,
         bmnk: (usize, usize, usize, usize),
-    ) {
+    ) -> GResult<CpuDevice> {
         match (self, rhs) {
             (CpuDevice::F16(l), CpuDevice::F16(r)) => {
-                MatMul(bmnk).compute(self.as_slice(), self.dim(), rhs.as_slice(), rhs.dim())?;
+                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
+                Ok(v.to_cpu_device())
             }
-            (CpuDevice::F32(l), CpuDevice::F32(r)) => {}
-            _ => {}
+            (CpuDevice::F16(l), CpuDevice::F16(r)) => {
+                todo!()
+            }
+            _ => {
+                todo!()
+            }
         }
     }
 }
@@ -651,6 +656,27 @@ impl Device {
                 todo!()
             }
         };
+    }
+
+    pub(crate) fn matmul(
+        &self,
+        dim: &Dim,
+        rhs: &Self,
+        rhs_dim: &Self,
+        bmnk: (usize, usize, usize, usize),
+    ) -> GResult<Device> {
+        match (self, rhs) {
+            (Device::Cpu(lhs), Device::Cpu(rhs)) => {
+                todo!()
+                //  lhs.matmul(dim, rhs, rhs_dim, bmnk)
+            }
+            (Device::Cpu(l), Device::Cpu(r)) => {
+                todo!()
+            }
+            _ => {
+                todo!()
+            }
+        }
     }
 
     // fn as_slice(&self) -> &[A] {
@@ -712,6 +738,10 @@ impl Tensor {
             data: data,
             dim: Dim { s, stride },
         }
+    }
+
+    fn device(&self) -> &Device {
+        &self.data
     }
 
     // fn from_device<A>(data: RawPtr<A>, s: Shape) -> Self {
@@ -819,22 +849,22 @@ impl Tensor {
         self.dim.is_contiguous()
     }
 
-    pub fn sqrt(&self) -> Self {
-        match &self.data {
-            Device::Cpu(d) => {
-                let v = self.as_slice().iter().map(|x| x._sqrt()).collect();
-                Tensor::from_vec(v, self.dim().shape().clone())
-            }
-            Device::Gpu() => {
-                todo!()
-            }
-        }
-    }
+    // pub fn sqrt(&self) -> Self {
+    //     match &self.data {
+    //         Device::Cpu(d) => {
+    //             let v = self.as_slice().iter().map(|x| x._sqrt()).collect();
+    //             Tensor::from_vec(v, self.dim().shape().clone())
+    //         }
+    //         Device::Gpu() => {
+    //             todo!()
+    //         }
+    //     }
+    // }
 
-    pub fn into_sqrt(mut self) -> Self {
-        self.as_slice_mut().iter_mut().for_each(|v| *v = v._sqrt());
-        self
-    }
+    // pub fn into_sqrt(mut self) -> Self {
+    //     self.as_slice_mut().iter_mut().for_each(|v| *v = v._sqrt());
+    //     self
+    // }
 
     pub fn chunk(&self, chunks: usize, dim: usize) -> GResult<Vec<Self>> {
         let size = self.dim().shape().as_slice()[dim];
@@ -939,12 +969,14 @@ impl Tensor {
             });
         }
 
-        let c = MatMul(batching, m, n, k).compute(
-            self.as_slice(),
-            self.dim(),
-            rhs.as_slice(),
-            rhs.dim(),
-        )?;
+        //self.device()
+
+        // let c = MatMul(batching, m, n, k).compute(
+        //     self.as_slice(),
+        //     self.dim(),
+        //     rhs.as_slice(),
+        //     rhs.dim(),
+        // )?;
         Ok(Self::from_vec(c, c_shape))
     }
 
@@ -1143,7 +1175,7 @@ impl Tensor {
     // }
 }
 
-struct MatMul(usize, usize, usize, usize);
+struct MatMul((usize, usize, usize, usize));
 
 impl MatMul {
     fn compute<T: TensorType + 'static>(
@@ -1160,7 +1192,7 @@ impl MatMul {
         //     _ => Err(Error::UnsupportedDTypeForOp(T::DTYPE, "matmul").bt())?,
         // }
 
-        let (b, m, n, k) = (self.0, self.1, self.2, self.3);
+        let (b, m, n, k) = self.0;
         let lhs_stride = lhs_l.stride();
         let rhs_stride = rhs_l.stride();
         let rank = lhs_stride.len();
@@ -1242,7 +1274,7 @@ impl MatMul {
 
 #[derive(Debug)]
 pub struct StridedIndex<'a> {
-    next_Device_index: Option<usize>,
+    next_device_index: Option<usize>,
     multi_index: Vec<usize>,
     dims: &'a [usize],
     stride: &'a [usize],
@@ -1251,14 +1283,14 @@ pub struct StridedIndex<'a> {
 impl<'a> StridedIndex<'a> {
     pub(crate) fn new(dims: &'a [usize], stride: &'a [usize], start_offset: usize) -> Self {
         let elem_count: usize = dims.iter().product();
-        let next_Device_index = if elem_count == 0 {
+        let next_device_index = if elem_count == 0 {
             None
         } else {
             // This applies to the scalar case.
             Some(start_offset)
         };
         StridedIndex {
-            next_Device_index,
+            next_device_index,
             multi_index: vec![0; dims.len()],
             dims,
             stride,
@@ -1270,12 +1302,12 @@ impl<'a> Iterator for StridedIndex<'a> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Device_index = match self.next_Device_index {
+        let Device_index = match self.next_device_index {
             None => return None,
             Some(Device_index) => Device_index,
         };
         let mut updated = false;
-        let mut next_Device_index = Device_index;
+        let mut next_device_index = Device_index;
         for ((multi_i, max_i), stride_i) in self
             .multi_index
             .iter_mut()
@@ -1287,15 +1319,15 @@ impl<'a> Iterator for StridedIndex<'a> {
             if next_i < *max_i {
                 *multi_i = next_i;
                 updated = true;
-                next_Device_index += stride_i;
+                next_device_index += stride_i;
                 break;
             } else {
-                next_Device_index -= *multi_i * stride_i;
+                next_device_index -= *multi_i * stride_i;
                 *multi_i = 0
             }
         }
-        self.next_Device_index = if updated {
-            Some(next_Device_index)
+        self.next_device_index = if updated {
+            Some(next_device_index)
         } else {
             None
         };
