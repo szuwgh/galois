@@ -1,22 +1,19 @@
-use crate::{Shape, TensorType};
+use crate::{Shape, TensorItem, TensorType};
 use crate::{Tensor, TensorIter};
 
 pub struct Zip<'a> {
-    a: TensorIter<'a, A>,
-    b: TensorIter<'a, A>,
+    a: TensorIter<'a>,
+    b: TensorIter<'a>,
 }
 
-impl<'a, A> Zip<'a, A>
-where
-    A: TensorType,
-{
-    pub fn new(a: TensorIter<'a, A>, b: TensorIter<'a, A>) -> Zip<'a, A> {
+impl<'a> Zip<'a> {
+    pub fn new(a: TensorIter<'a>, b: TensorIter<'a>) -> Zip<'a> {
         Self { a: a, b: b }
     }
 
     pub fn ops<F>(self, mut f: F)
     where
-        F: FnMut((&mut A, &A)),
+        F: FnMut((TensorItem<'a>, TensorItem<'a>)),
     {
         for t in self.into_iter() {
             f(t);
@@ -25,17 +22,14 @@ where
 
     pub fn map<F>(self, f: F) -> Map<Self, F>
     where
-        F: FnMut((&mut A, &A)) -> A,
+        F: FnMut((TensorItem<'a>, TensorItem<'a>)) -> TensorItem<'a>,
     {
         Map::new(self, f)
     }
 }
 
-impl<'a, A> Iterator for Zip<'a, A>
-where
-    A: TensorType,
-{
-    type Item = (&'a mut A, &'a A);
+impl<'a> Iterator for Zip<'a> {
+    type Item = (TensorItem<'a>, TensorItem<'a>);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -45,22 +39,22 @@ where
     }
 }
 
-pub struct Map<I, F> {
+pub struct Map<I: Iterator, F> {
     pub(crate) iter: I,
     f: F,
 }
 
-impl<B: TensorType, I: Iterator, F> Map<I, F>
+impl<B, I: Iterator, F> Map<I, F>
 where
     F: FnMut(I::Item) -> B,
 {
     pub fn new(i: I, f: F) -> Map<I, F> {
         Self { iter: i, f: f }
     }
-    pub fn collect_tensor(self, dim: Shape) -> Tensor {
-        let v: Vec<B> = self.collect();
-        Tensor::from_vec(v, dim)
-    }
+    // pub fn collect_tensor(self) -> Vec<B> {
+    //   let v = self.collect();
+    //   //  Tensor::from_vec(v, dim)
+    // }
 }
 
 impl<B, I: Iterator, F> Iterator for Map<I, F>
@@ -85,7 +79,7 @@ mod tests {
     fn test_select_axis() {
         let a = vec![1, 2, 3, 4];
         let b = vec![1, 2, 3, 4];
-        //let c: Vec<i32> = a.iter().zip(b.iter()).filter(predicate)
+        //   let c: Vec<i32> = a.iter().zip(b.iter()).map(f)
 
         // a.iter().zip(b.iter()).for_each(|(t1, t2)| {
         //     c = *t1 + *t2;
@@ -109,9 +103,9 @@ mod tests {
             [3.0, 3.0, 3.0],
         ]);
 
-        m1.view()
-            .iter()
-            .for_each(|x| if *x > 1.0 { *x = 1.0 } else { *x = 0.0 });
+        // m1.view()
+        //     .iter()
+        //     .for_each(|x| if *x > 1.0 { *x = 1.0 } else { *x = 0.0 });
 
         println!("m3:{:?}", m1);
     }

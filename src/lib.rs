@@ -1,4 +1,5 @@
 #![feature(concat_idents)]
+#![feature(non_null_convenience)]
 mod broadcast;
 pub mod error;
 pub mod op;
@@ -515,12 +516,10 @@ impl<P> RawPtr<P> {
     }
 }
 
-use std::marker::PhantomData;
-
-pub enum TItem<'a> {
-    F16(&'a f16),
-    F32(&'a f32),
-    F64(&'a f64),
+pub enum TensorItem<'a> {
+    F16(&'a mut f16),
+    F32(&'a mut f32),
+    F64(&'a mut f64),
 }
 
 pub struct TensorIter<'a> {
@@ -531,7 +530,7 @@ pub struct TensorIter<'a> {
 }
 
 impl<'a> Iterator for TensorIter<'a> {
-    type Item = TItem<'a>;
+    type Item = TensorItem<'a>;
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let index = self.shape_iter.next()?;
@@ -540,7 +539,7 @@ impl<'a> Iterator for TensorIter<'a> {
             Device::Cpu(cpu) => match cpu {
                 CpuDevice::F16(v) => {
                     let ptr = unsafe { v.as_ptr().offset(offset) }.as_ptr();
-                    unsafe { Some(TItem::F16(&mut *ptr)) }
+                    unsafe { Some(TensorItem::F16(&mut *ptr)) }
                 }
                 _ => {
                     todo!()
@@ -592,6 +591,22 @@ impl CpuDevice {
             CpuDevice::F32(v) => v.len(),
             CpuDevice::F64(v) => v.len(),
         };
+    }
+
+    pub(crate) fn matmul(
+        &self,
+        dim: &Dim,
+        rhs: &Self,
+        rhs_dim: &Self,
+        bmnk: (usize, usize, usize, usize),
+    ) {
+        match (self, rhs) {
+            (CpuDevice::F16(l), CpuDevice::F16(r)) => {
+                MatMul(bmnk).compute(self.as_slice(), self.dim(), rhs.as_slice(), rhs.dim())?;
+            }
+            (CpuDevice::F32(l), CpuDevice::F32(r)) => {}
+            _ => {}
+        }
     }
 }
 
@@ -873,13 +888,13 @@ impl Tensor {
         }
     }
 
-    pub fn broadcast_with(&self, s: &Shape) -> GResult<Tensor> {
-        let broadcast_dim = self.dim().broadcast_with(s)?;
-        Ok(Tensor {
-            data: self.data.as_ref(),
-            dim: broadcast_dim,
-        })
-    }
+    // pub fn broadcast_with(&self, s: &Shape) -> GResult<Tensor> {
+    //     let broadcast_dim = self.dim().broadcast_with(s)?;
+    //     Ok(Tensor {
+    //         data: self.data.as_ref(),
+    //         dim: broadcast_dim,
+    //     })
+    // }
 
     // pub fn matmul(&self, rhs: &Tensor) -> GResult<Tensor> {
     //     let lhs = self;
@@ -1009,19 +1024,19 @@ impl Tensor {
         } else if left == 0 {
             let mut dims = self.dim().dims().to_vec();
             dims[dim] = right;
-            let right = Tensor::<A>::from_elem(elem, Shape::from_vec(dims));
+            let right = Tensor::from_elem(elem, Shape::from_vec(dims));
             Tensor::cat(&[self, &right], dim)
         } else if right == 0 {
             let mut dims = self.dim().dims().to_vec();
             dims[dim] = left;
-            let left = Tensor::<A>::from_elem(elem, Shape::from_vec(dims));
+            let left = Tensor::from_elem(elem, Shape::from_vec(dims));
             Tensor::cat(&[&left, &self], dim)
         } else {
             let mut dims = self.dim().dims().to_vec();
             dims[dim] = left;
-            let left = Tensor::<A>::from_elem(elem, Shape::from_slice(dims.as_slice()));
+            let left = Tensor::from_elem(elem, Shape::from_slice(dims.as_slice()));
             dims[dim] = right;
-            let right = Tensor::<A>::from_elem(elem, Shape::from_vec(dims));
+            let right = Tensor::from_elem(elem, Shape::from_vec(dims));
             Tensor::cat(&[&left, &self, &right], dim)
         }
     }
@@ -1095,7 +1110,7 @@ impl Tensor {
         let axis_dim = self.dim.shape().select_axis(a);
         let s = shape::select_axis(&self.dim.stride, a);
         let raw_ref = RawRef {
-            ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
+            ptr: unsafe { self.as_ptr().offset(offset as isize) },
             len: self.data.len() - offset,
         };
         Tensor {
@@ -1107,14 +1122,13 @@ impl Tensor {
         }
     }
 
-    pub fn iter(&self) -> TensorIter<'_, A> {
+    pub fn iter(&self) -> TensorIter<'_> {
         TensorIter {
-            ptr: self.data.as_ptr(),
+            device: &self.data,
             shape_iter: self.dim.s.iter(),
             // dim: self.dim.s.clone(),
             strides: self.dim.stride(),
             // index: self.dim.shape().first_index(),
-            _marker: PhantomData,
         }
     }
 
