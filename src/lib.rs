@@ -605,8 +605,39 @@ impl CpuDevice {
                 let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
                 Ok(v.to_cpu_device())
             }
-            (CpuDevice::F16(l), CpuDevice::F16(r)) => {
+            (CpuDevice::F32(l), CpuDevice::F32(r)) => {
+                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
+                Ok(v.to_cpu_device())
+            }
+            (CpuDevice::F64(l), CpuDevice::F64(r)) => {
+                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
+                Ok(v.to_cpu_device())
+            }
+            _ => {
                 todo!()
+            }
+        }
+    }
+
+    pub(crate) fn copy_strided_src(
+        &self,
+        dim: &Dim,
+        rhs: &Self,
+        rhs_dim: &Dim,
+        bmnk: (usize, usize, usize, usize),
+    ) -> GResult<CpuDevice> {
+        match (self, rhs) {
+            (CpuDevice::F16(l), CpuDevice::F16(r)) => {
+                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
+                Ok(v.to_cpu_device())
+            }
+            (CpuDevice::F32(l), CpuDevice::F32(r)) => {
+                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
+                Ok(v.to_cpu_device())
+            }
+            (CpuDevice::F64(l), CpuDevice::F64(r)) => {
+                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
+                Ok(v.to_cpu_device())
             }
             _ => {
                 todo!()
@@ -662,15 +693,14 @@ impl Device {
         &self,
         dim: &Dim,
         rhs: &Self,
-        rhs_dim: &Self,
+        rhs_dim: &Dim,
         bmnk: (usize, usize, usize, usize),
     ) -> GResult<Device> {
         match (self, rhs) {
             (Device::Cpu(lhs), Device::Cpu(rhs)) => {
-                todo!()
-                //  lhs.matmul(dim, rhs, rhs_dim, bmnk)
+                Ok(Device::Cpu(lhs.matmul(dim, rhs, rhs_dim, bmnk)?))
             }
-            (Device::Cpu(l), Device::Cpu(r)) => {
+            (Device::Gpu(), Device::Gpu()) => {
                 todo!()
             }
             _ => {
@@ -678,6 +708,8 @@ impl Device {
             }
         }
     }
+
+    pub(crate) fn copy_strided_src() {}
 
     // fn as_slice(&self) -> &[A] {
     //     return match self {
