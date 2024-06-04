@@ -516,6 +516,7 @@ impl<P> RawPtr<P> {
     }
 }
 
+#[derive(Debug)]
 pub enum TensorItem<'a> {
     F16(&'a mut f16),
     F32(&'a mut f32),
@@ -523,10 +524,9 @@ pub enum TensorItem<'a> {
 }
 
 pub struct TensorIter<'a> {
-    device: &'a Device, //NonNull<A>,
+    device: &'a Device,
     strides: &'a [usize],
     shape_iter: ShapeIter<'a>,
-    // _marker: PhantomData<&'a>,
 }
 
 impl<'a> Iterator for TensorIter<'a> {
@@ -540,6 +540,14 @@ impl<'a> Iterator for TensorIter<'a> {
                 CpuDevice::F16(v) => {
                     let ptr = unsafe { v.as_ptr().offset(offset) }.as_ptr();
                     unsafe { Some(TensorItem::F16(&mut *ptr)) }
+                }
+                CpuDevice::F32(v) => {
+                    let ptr = unsafe { v.as_ptr().offset(offset) }.as_ptr();
+                    unsafe { Some(TensorItem::F32(&mut *ptr)) }
+                }
+                CpuDevice::F64(v) => {
+                    let ptr = unsafe { v.as_ptr().offset(offset) }.as_ptr();
+                    unsafe { Some(TensorItem::F64(&mut *ptr)) }
                 }
                 _ => {
                     todo!()
@@ -619,28 +627,39 @@ impl CpuDevice {
         }
     }
 
-    pub(crate) fn copy_strided_src(
-        &self,
-        dim: &Dim,
-        rhs: &Self,
-        rhs_dim: &Dim,
-        bmnk: (usize, usize, usize, usize),
-    ) -> GResult<CpuDevice> {
+    pub(crate) fn copy_strided_src(&self, rhs: &mut Self, dst_offset: usize, src_l: &Dim) {
         match (self, rhs) {
             (CpuDevice::F16(l), CpuDevice::F16(r)) => {
-                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
-                Ok(v.to_cpu_device())
+                copy_strided_src(l.as_slice(), r.as_slice_mut(), dst_offset, src_l);
             }
             (CpuDevice::F32(l), CpuDevice::F32(r)) => {
-                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
-                Ok(v.to_cpu_device())
+                copy_strided_src(l.as_slice(), r.as_slice_mut(), dst_offset, src_l);
             }
             (CpuDevice::F64(l), CpuDevice::F64(r)) => {
-                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
-                Ok(v.to_cpu_device())
+                copy_strided_src(l.as_slice(), r.as_slice_mut(), dst_offset, src_l);
             }
             _ => {
                 todo!()
+            }
+        }
+    }
+
+    pub(crate) fn sqrt(&self) -> Self {
+        match self {
+            CpuDevice::F16(l) => {
+                let v: Vec<f16> = l.as_slice().iter().map(|x| x._sqrt()).collect();
+                let data = RawPtr::from_raw_parts(v.as_ptr() as *mut f16, v.len(), v.capacity());
+                CpuDevice::F16(RawData::Own(data))
+            }
+            CpuDevice::F32(l) => {
+                let v: Vec<f32> = l.as_slice().iter().map(|x| x._sqrt()).collect();
+                let data = RawPtr::from_raw_parts(v.as_ptr() as *mut f16, v.len(), v.capacity());
+                CpuDevice::F16(RawData::Own(data))
+            }
+            CpuDevice::F64(l) => {
+                let v: Vec<f64> = l.as_slice().iter().map(|x| x._sqrt()).collect();
+                let data = RawPtr::from_raw_parts(v.as_ptr() as *mut f16, v.len(), v.capacity());
+                CpuDevice::F16(RawData::Own(data))
             }
         }
     }
@@ -709,8 +728,31 @@ impl Device {
         }
     }
 
-    pub(crate) fn copy_strided_src() {}
+    pub(crate) fn copy_strided_src(&self, rhs: &mut Self, dst_offset: usize, src_l: &Dim) {
+        match (self, rhs) {
+            (Device::Cpu(lhs), Device::Cpu(rhs)) => lhs.copy_strided_src(rhs, dst_offset, src_l),
+            (Device::Gpu(), Device::Gpu()) => {
+                todo!()
+            }
+            _ => {
+                todo!()
+            }
+        }
+    }
 
+    pub(crate) fn sqrt(&self) -> Self {
+        match self {
+            Device::Cpu(lhs) => {
+                todo!()
+            }
+            Device::Gpu() => {
+                todo!()
+            }
+            _ => {
+                todo!()
+            }
+        }
+    }
     // fn as_slice(&self) -> &[A] {
     //     return match self {
     //         Device::Cpu(v) => v.as_slice(),
@@ -732,6 +774,7 @@ impl Device {
 
 #[derive(Clone)]
 pub struct Tensor {
+    dtype: DType,
     data: Device,
     dim: Dim,
 }
@@ -747,26 +790,27 @@ impl Tensor {
         let dim = [xs.len()];
         let shape = Shape::from_array(dim);
         let data = xs.to_cpu_device();
-        Tensor::from_device(Device::Cpu(data), shape)
+        Tensor::from_device(Device::Cpu(data), shape, A::DTYPE)
     }
 
     fn mat<A: TensorType, const N: usize>(xs: Vec<[A; N]>) -> Self {
         let dim = [xs.len(), N];
         let shape = Shape::from_array(dim);
         let data = xs.to_cpu_device();
-        Tensor::from_device(Device::Cpu(data), shape)
+        Tensor::from_device(Device::Cpu(data), shape, A::DTYPE)
     }
 
-    fn cube<A: TensorType, const M: usize, const N: usize>(mut xs: Vec<[[A; N]; M]>) -> Self {
+    fn cube<A: TensorType, const M: usize, const N: usize>(xs: Vec<[[A; N]; M]>) -> Self {
         let dim = [xs.len(), M, N];
         let shape = Shape::from_array(dim);
         let data = xs.to_cpu_device();
-        Tensor::from_device(Device::Cpu(data), shape)
+        Tensor::from_device(Device::Cpu(data), shape, A::DTYPE)
     }
 
-    fn from_device(data: Device, s: Shape) -> Self {
+    fn from_device(data: Device, s: Shape, dtype: DType) -> Self {
         let stride = s.strides();
         Self {
+            dtype: dtype,
             data: data,
             dim: Dim { s, stride },
         }
@@ -774,6 +818,10 @@ impl Tensor {
 
     fn device(&self) -> &Device {
         &self.data
+    }
+
+    fn device_mut(&mut self) -> &mut Device {
+        &mut self.data
     }
 
     // fn from_device<A>(data: RawPtr<A>, s: Shape) -> Self {
@@ -795,6 +843,7 @@ impl Tensor {
 
     pub fn view(&self) -> Tensor {
         Tensor {
+            dtype: self.dtype.clone(),
             data: self.data.as_ref(),
             dim: self.dim.clone(),
         }
@@ -807,7 +856,7 @@ impl Tensor {
         let size = s.size();
         let mut v = RawPtr::<A>::with_capacity(size);
         v.fill(a, size);
-        Tensor::from_device(Device::Cpu(v.to_cpu_device()), s)
+        Tensor::from_device(Device::Cpu(v.to_cpu_device()), s, A::DTYPE)
     }
 
     // pub fn with_shape<A: TensorType>(v: Vec<A>, d: Shape) -> Self {
@@ -834,7 +883,7 @@ impl Tensor {
 
     fn from_vec<A: TensorType>(v: Vec<A>, s: Shape) -> Self {
         let data = v.to_cpu_device();
-        Tensor::from_device(Device::Cpu(data), s)
+        Tensor::from_device(Device::Cpu(data), s, A::DTYPE)
     }
 
     // pub fn as_slice<A>(&self) -> &[A] {
@@ -845,8 +894,12 @@ impl Tensor {
     //     self.data.as_slice_mut()
     // }
 
-    pub fn zeros<A: TensorType>(d: Shape) -> Self {
-        Self::from_elem(A::zero(), d)
+    pub fn zeros(d: Shape, dtype: DType) -> Self {
+        match dtype {
+            DType::F16 => Self::from_elem(f16::zero(), d),
+            DType::F32 => Self::from_elem(f32::zero(), d),
+            DType::F64 => Self::from_elem(f64::zero(), d),
+        }
     }
 
     pub fn shape(&self) -> &Shape {
@@ -859,6 +912,10 @@ impl Tensor {
 
     pub fn dim(&self) -> &Dim {
         &self.dim
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
     }
 
     pub fn single_dim(&self, dim: usize) -> GResult<usize> {
@@ -881,17 +938,22 @@ impl Tensor {
         self.dim.is_contiguous()
     }
 
-    // pub fn sqrt(&self) -> Self {
-    //     match &self.data {
-    //         Device::Cpu(d) => {
-    //             let v = self.as_slice().iter().map(|x| x._sqrt()).collect();
-    //             Tensor::from_vec(v, self.dim().shape().clone())
-    //         }
-    //         Device::Gpu() => {
-    //             todo!()
-    //         }
-    //     }
-    // }
+    pub fn sqrt(&self) -> Self {
+        match &self.data {
+            Device::Cpu(d) => {
+                Tensor::from_device(
+                    Device::Cpu(d.sqrt()),
+                    self.dim().shape().clone(),
+                    self.dtype(),
+                )
+                // let v = diter().map(|x| x._sqrt()).collect();
+                // Tensor::from_vec(v, self.dim().shape().clone())
+            }
+            Device::Gpu() => {
+                todo!()
+            }
+        }
+    }
 
     // pub fn into_sqrt(mut self) -> Self {
     //     self.as_slice_mut().iter_mut().for_each(|v| *v = v._sqrt());
@@ -944,6 +1006,7 @@ impl Tensor {
             let new_dim = self.dim.narrow(dim, start, len)?;
             let offset = self.dim().stride()[dim] * start;
             Ok(Tensor {
+                dtype: self.dtype(),
                 data: self.data.offset(offset),
                 dim: new_dim,
             })
@@ -973,7 +1036,11 @@ impl Tensor {
     //     }
     // }
 
-    pub fn _matmul(&self, rhs: &Tensor) -> GResult<Tensor> {
+    pub fn matmul(&self, rhs: &Tensor) -> GResult<Tensor> {
+        assert!(self.dim().is_contiguous());
+        assert!(rhs.dim().is_contiguous());
+        assert!(self.shape().as_slice().last() == self.shape().as_slice().last());
+
         let l_dim = self.shape().as_slice();
         let r_dim: &[usize] = rhs.shape().as_slice();
         let dim = l_dim.len();
@@ -1001,7 +1068,9 @@ impl Tensor {
             });
         }
 
-        //self.device()
+        let device =
+            self.device()
+                .matmul(self.dim(), rhs.device(), rhs.dim(), (batching, m, n, k))?;
 
         // let c = MatMul(batching, m, n, k).compute(
         //     self.as_slice(),
@@ -1009,7 +1078,7 @@ impl Tensor {
         //     rhs.as_slice(),
         //     rhs.dim(),
         // )?;
-        Ok(Self::from_vec(c, c_shape))
+        Ok(Self::from_device(device, c_shape, self.dtype()))
     }
 
     pub fn into_reshape(self, s: Shape) -> Tensor {
@@ -1023,12 +1092,15 @@ impl Tensor {
         if self.dim().is_contiguous() {
             let stride = s.strides();
             Self {
+                dtype: self.dtype(),
                 data: self.data,
                 dim: Dim { s, stride },
             }
         } else {
-            let mut new_tensor = Self::zeros(s);
-            copy_strided_src(self.as_slice(), new_tensor.as_slice_mut(), 0, self.dim());
+            let mut new_tensor = Self::zeros(s, self.dtype());
+            self.device()
+                .copy_strided_src(&mut new_tensor.device_mut(), 0, self.dim());
+            //copy_strided_src(self.as_slice(), new_tensor.as_slice_mut(), 0, self.dim());
             new_tensor
         }
     }
@@ -1044,12 +1116,14 @@ impl Tensor {
         if self.dim().is_contiguous() {
             let stride = s.strides();
             Self {
+                dtype: self.dtype(),
                 data: self.data.as_ref(),
                 dim: Dim { s, stride },
             }
         } else {
-            let mut new_tensor = Self::zeros(s);
-            copy_strided_src(self.as_slice(), new_tensor.as_slice_mut(), 0, self.dim());
+            let mut new_tensor = Self::zeros(s, self.dtype());
+            self.device()
+                .copy_strided_src(&mut new_tensor.device_mut(), 0, self.dim());
             new_tensor
         }
     }
@@ -1071,6 +1145,7 @@ impl Tensor {
         }
         let new_dim = self.dim.transpose(d1, d2)?;
         Ok(Tensor {
+            dtype: self.dtype(),
             data: self.data,
             dim: new_dim,
         })
@@ -1140,10 +1215,11 @@ impl Tensor {
             offsets.push(next_offset);
         }
         let shape: Shape = Shape::from_vec(cat_dims);
-        let mut new_tensor = Self::zeros(shape);
+        let mut new_tensor = Self::zeros(shape, t0.dtype());
         for (arg, &offset) in ts.iter().zip(offsets.iter()) {
             let t = arg.as_ref();
-            copy_strided_src(t.as_slice(), new_tensor.as_slice_mut(), offset, t.dim());
+            t.device()
+                .copy_strided_src(new_tensor.device_mut(), offset, t.dim());
         }
         Ok(new_tensor)
     }
@@ -1154,12 +1230,13 @@ impl Tensor {
         let offset = index * stride;
         let axis_dim = self.dim.shape().select_axis(a);
         let s = shape::select_axis(&self.dim.stride, a);
-        let raw_ref = RawRef {
-            ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
-            len: self.data.len() - offset,
-        };
+        // let raw_ref = RawRef {
+        //     ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
+        //     len: self.data.len() - offset,
+        // };
         Tensor {
-            data: Device::Cpu(RawData::Ref(raw_ref)),
+            dtype: self.dtype(),
+            data: self.device().offset(offset),
             dim: Dim {
                 s: axis_dim,
                 stride: s.into_boxed_slice(),
@@ -1173,12 +1250,13 @@ impl Tensor {
         let offset = index * stride;
         let axis_dim = self.dim.shape().select_axis(a);
         let s = shape::select_axis(&self.dim.stride, a);
-        let raw_ref = RawRef {
-            ptr: unsafe { self.as_ptr().offset(offset as isize) },
-            len: self.data.len() - offset,
-        };
+        // let raw_ref = RawRef {
+        //     ptr: unsafe { self.as_ptr().offset(offset as isize) },
+        //     len: self.data.len() - offset,
+        // };
         Tensor {
-            data: Device::Cpu(RawData::Ref(raw_ref)),
+            dtype: self.dtype(),
+            data: self.device().offset(offset), //Device::Cpu(RawData::Ref(raw_ref)),
             dim: Dim {
                 s: axis_dim,
                 stride: s.into_boxed_slice(),
@@ -1334,12 +1412,12 @@ impl<'a> Iterator for StridedIndex<'a> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Device_index = match self.next_device_index {
+        let device_index = match self.next_device_index {
             None => return None,
-            Some(Device_index) => Device_index,
+            Some(device_index) => device_index,
         };
         let mut updated = false;
-        let mut next_device_index = Device_index;
+        let mut next_device_index = device_index;
         for ((multi_i, max_i), stride_i) in self
             .multi_index
             .iter_mut()
@@ -1363,7 +1441,7 @@ impl<'a> Iterator for StridedIndex<'a> {
         } else {
             None
         };
-        Some(Device_index)
+        Some(device_index)
     }
 }
 
@@ -1447,11 +1525,7 @@ impl fmt::Debug for Tensor {
     }
 }
 
-fn format_tensor<A: TensorType>(
-    tensor: Tensor,
-    depth: usize,
-    f: &mut fmt::Formatter<'_>,
-) -> fmt::Result {
+fn format_tensor(tensor: Tensor, depth: usize, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match tensor.shape().as_slice() {
         &[] => {}
         &[len] => {
@@ -1460,7 +1534,7 @@ fn format_tensor<A: TensorType>(
                 if i > 0 {
                     f.write_str(",")?;
                 }
-                f.write_str(&format!(" {:?}", *v))?;
+                f.write_str(&format!(" {:?}", v))?;
             }
             f.write_str("]")?;
         }
@@ -1502,31 +1576,31 @@ mod tests {
     #[test]
     fn test_mat() {
         let m = mat(&[[1.0, 2.0], [3.0, 4.0]]);
-        let v = m.as_slice();
-        let s = &m.dim.stride;
-        {
-            let t = m.as_ref();
-        }
-        println!("s:{:?}", s);
+        // //   let v = m.as_slice();
+        // let s = &m.dim.stride;
+        // {
+        //     let t = m.as_ref();
+        // }
+        // println!("s:{:?}", s);
         println!("v:{:?}", m);
     }
 
     #[test]
     fn test_cude() {
         let m = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
-        let v = m.as_slice();
+        //  let v = m.as_slice();
         println!("v:{:?}", m);
         println!("shape:{:?}", m.dim().shape().as_slice());
         println!("stride:{:?}", m.dim().stride());
 
         for v in m.iter() {
-            println!("v:{:?}", *v);
+            println!("v:{:?}", v);
         }
 
         let m1 = m.into_transpose(0, 1).unwrap();
 
         for v in m1.iter() {
-            println!("v1:{:?}", *v);
+            println!("v1:{:?}", v);
         }
         let vv = m1.axis_index(Axis(0), 0);
         println!("vv:{:?}", vv);
@@ -1537,8 +1611,8 @@ mod tests {
 
     #[test]
     fn test_fmt() {
-        let a = Tensor::<f64>::from_elem(1.0, Shape::from_array([4usize, 3, 2]));
-        let v = a.as_slice();
+        let a = Tensor::from_elem(1.0f64, Shape::from_array([4usize, 3, 2]));
+        //let v = a.as_slice();
         let t = a.as_ref();
         println!("v:{:?}", a);
     }
@@ -1580,26 +1654,26 @@ mod tests {
 
         println!("m3:{:?}", m3);
         for m in m3.iter() {
-            println!("m:{:?}", *m);
+            println!("m:{:?}", m);
         }
 
-        let m4: Tensor<f64> = Tensor::cat(&[&m1, &m2], 1).unwrap();
+        let m4: Tensor = Tensor::cat(&[&m1, &m2], 1).unwrap();
 
         println!("m4:{:?}", m4);
         println!("shape:{:?}", m4.dim());
-        println!("slice:{:?}", m4.as_slice());
+        //    println!("slice:{:?}", m4.as_slice());
 
         let m5 = mat(&[[1.0, 2.0, 1.0, 2.0], [3.0, 4.0, 3.0, 4.0]]);
         println!("m5:{:?}", m5);
         println!("shape:{:?}", m5.dim());
-        println!("slice:{:?}", m5.as_slice());
+        //   println!("slice:{:?}", m5.as_slice());
 
         let m6 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
         let m7 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
-        let m8: Tensor<f64> = Tensor::cat(&[&m6, &m7], 2).unwrap();
+        let m8: Tensor = Tensor::cat(&[&m6, &m7], 2).unwrap();
         println!("m8:{:?}", m8);
         println!("shape:{:?}", m8.dim());
-        println!("slice:{:?}", m8.as_slice());
+        //     println!("slice:{:?}", m8.as_slice());
     }
 
     #[test]
@@ -1607,35 +1681,35 @@ mod tests {
         let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
         let d = m1.pad(2, 1, 1, 0.0).unwrap().pad(3, 0, 0, 0.0).unwrap();
         for x in d.iter() {
-            println!("{:?}", *x);
+            println!("{:?}", x);
         }
         println!("{:?}", d);
     }
 
     #[test]
     fn test_matmul() {
-        let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let m1 = mat(&[[1.0, 2.0], [3.0, 4.0], [1.0, 2.0], [3.0, 4.0], [1.0, 2.0]]);
         let m2 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
-        let d = m1._matmul(&m2).unwrap();
-        println!("{:?}", d);
-
-        let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
-        let m2 = mat(&[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]);
         let d = m1.matmul(&m2).unwrap();
         println!("{:?}", d);
+
+        // let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        // let m2 = mat(&[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]);
+        // let d = m1.matmul(&m2).unwrap();
+        // println!("{:?}", d);
     }
 
     // [[1, 2, 3],
     //  [2, 4, 6],
     //   [3, 6, 9]])
-    #[test]
-    fn test_with_shape_fn() {
-        let m1 = Tensor::with_shape_fn(Shape::from_array([3, 3]), |s| {
-            let (i, j) = s.dims2();
-            ((1 + i) * (1 + j)) as u32
-        });
-        println!("{:?}", m1);
-    }
+    // #[test]
+    // fn test_with_shape_fn() {
+    //     let m1 = Tensor::with_shape_fn(Shape::from_array([3, 3]), |s| {
+    //         let (i, j) = s.dims2();
+    //         ((1 + i) * (1 + j)) as u32
+    //     });
+    //     println!("{:?}", m1);
+    // }
 
     #[test]
     fn test_sqrt() {
@@ -1658,7 +1732,12 @@ mod tests {
 
     #[test]
     fn test_chunk() -> GResult<()> {
-        let a = mat(&[[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]);
+        let a = mat(&[
+            [0.0, 1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0, 7.0],
+            [8.0, 9.0, 10.0, 11.0],
+            [12.0, 13.0, 14.0, 15.0],
+        ]);
         let b = a.chunk(4, 0)?;
         for i in b {
             println!("b:{:?}", i);
@@ -1673,11 +1752,16 @@ mod tests {
 
     #[test]
     fn test_clone() -> GResult<()> {
-        let mut a = mat(&[[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]);
+        let mut a = mat(&[
+            [0.0, 1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0, 7.0],
+            [8.0, 9.0, 10.0, 11.0],
+            [12.0, 1.0, 14.0, 15.0],
+        ]);
         let b = a.clone();
-        a.as_slice_mut()[1] = 100;
-        println!("{:?}", a);
-        println!("{:?}", b);
+        // a.as_slice_mut()[1] = 100;
+        // println!("{:?}", a);
+        // println!("{:?}", b);
         Ok(())
     }
 }

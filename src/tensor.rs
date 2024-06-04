@@ -10,7 +10,8 @@ use crate::UnaryOp;
 use crate::{Tensor, TensorType};
 use half::f16;
 use num_traits::ToPrimitive;
-#[derive(Debug)]
+
+#[derive(Debug, Clone, Copy)]
 pub enum DType {
     F16,
     F32,
