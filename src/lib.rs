@@ -21,7 +21,128 @@ use std::fmt;
 use std::mem::forget;
 mod tensor;
 use half::f16;
-pub use tensor::DType;
+use num_traits::ToPrimitive;
+
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+pub enum DType {
+    F16,
+    F32,
+    F64,
+    TypeCount,
+}
+
+const GS_TYPE_SIZE: [usize; DType::TypeCount as usize] = [
+    // std::mem::size_of::<i8>(),
+    // std::mem::size_of::<i16>(),
+    // std::mem::size_of::<i32>(),
+    std::mem::size_of::<f16>(),
+    std::mem::size_of::<f32>(),
+    std::mem::size_of::<f64>(),
+];
+
+#[macro_export]
+macro_rules! impl_tousize {
+    ($($e:ident),*) => {
+        $(impl ToUsize for $e {
+            fn as_usize(&self) -> usize {
+                *self as usize
+            }
+        })*
+    };
+}
+
+#[macro_export]
+macro_rules! impl_fromf32 {
+    ($($e:ident),*) => {
+        $(impl FromF32 for $e {
+            fn from_f32(a: f32) -> Self {
+                a as $e
+            }
+        })*
+    };
+}
+
+#[macro_export]
+macro_rules! impl_fromf64 {
+    ($($e:ident),*) => {
+        $(impl FromF64 for $e {
+            fn from_f64(a: f64) -> Self {
+                a as $e
+            }
+        })*
+    };
+}
+
+#[macro_export]
+macro_rules! impl_no_unary_op {
+    ($($e:ident),*) => {
+        $(impl UnaryOp for $e {
+                fn _exp(&self) -> Self {
+                   todo!()
+                }
+                fn _ln(&self) -> Self {
+                    todo!()
+                }
+                fn _sin(&self) -> Self {
+                    todo!()
+                }
+                fn _cos(&self) -> Self {
+                    todo!()
+                }
+                fn _tanh(&self) -> Self {
+                    todo!()
+                }
+                fn _neg(&self) -> Self {
+                    todo!()
+                }
+                fn _recip(&self) -> Self {
+                    todo!()
+                }
+                fn _sqr(&self) -> Self {
+                    todo!()
+                }
+                fn _sqrt(&self) -> Self {
+                    todo!()
+                }
+        })*
+    };
+}
+
+impl ToUsize for f16 {
+    fn as_usize(&self) -> usize {
+        self.to_usize().unwrap()
+    }
+}
+
+impl FromF32 for f16 {
+    fn from_f32(a: f32) -> Self {
+        f16::from_f32(a)
+    }
+}
+
+impl FromF64 for f16 {
+    fn from_f64(a: f64) -> Self {
+        f16::from_f64(a)
+    }
+}
+
+impl_tousize!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_fromf32!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_fromf64!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_no_unary_op!(u8, u16, u32, u64, i8, i16, i32, i64);
+
+impl TensorType for f16 {
+    const DTYPE: DType = DType::F16;
+}
+
+impl TensorType for f32 {
+    const DTYPE: DType = DType::F32;
+}
+
+impl TensorType for f64 {
+    const DTYPE: DType = DType::F64;
+}
 
 pub trait ToUsize {
     fn as_usize(&self) -> usize;
@@ -155,19 +276,19 @@ impl<A: TensorType> NdArray for Vec<A> {
     fn to_cpu_device(self) -> CpuDevice {
         let device = match A::DTYPE {
             DType::F16 => {
-                let data =
+                let raw =
                     RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.capacity());
-                CpuDevice::F16(RawData::Own(data))
+                CpuDevice::F16(RawData::Own(raw))
             }
             DType::F32 => {
-                let data =
+                let raw =
                     RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.capacity());
-                CpuDevice::F32(RawData::Own(data))
+                CpuDevice::F32(RawData::Own(raw))
             }
             DType::F64 => {
-                let data =
+                let raw =
                     RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.capacity());
-                CpuDevice::F64(RawData::Own(data))
+                CpuDevice::F64(RawData::Own(raw))
             }
             _ => {
                 todo!()
@@ -186,16 +307,16 @@ impl<A: TensorType> NdArray for &[A] {
     fn to_cpu_device(self) -> CpuDevice {
         match A::DTYPE {
             DType::F16 => {
-                let data = RawRef::from_raw_parts(self.as_ptr() as *mut f16, self.len());
-                CpuDevice::F16(RawData::Ref(data))
+                let raw = RawRef::from_raw_parts(self.as_ptr() as *mut f16, self.len());
+                CpuDevice::F16(RawData::Ref(raw))
             }
             DType::F32 => {
-                let data = RawRef::from_raw_parts(self.as_ptr() as *mut f32, self.len());
-                CpuDevice::F32(RawData::Ref(data))
+                let raw = RawRef::from_raw_parts(self.as_ptr() as *mut f32, self.len());
+                CpuDevice::F32(RawData::Ref(raw))
             }
             DType::F64 => {
-                let data = RawRef::from_raw_parts(self.as_ptr() as *mut f64, self.len());
-                CpuDevice::F64(RawData::Ref(data))
+                let raw = RawRef::from_raw_parts(self.as_ptr() as *mut f64, self.len());
+                CpuDevice::F64(RawData::Ref(raw))
             }
             _ => {
                 todo!()
@@ -212,19 +333,19 @@ impl<A: TensorType, const N: usize> NdArray for Vec<[A; N]> {
     fn to_cpu_device(self) -> CpuDevice {
         let device = match A::DTYPE {
             DType::F16 => {
-                let data =
+                let raw =
                     RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.capacity());
-                CpuDevice::F16(RawData::Own(data))
+                CpuDevice::F16(RawData::Own(raw))
             }
             DType::F32 => {
-                let data =
+                let raw =
                     RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.capacity());
-                CpuDevice::F32(RawData::Own(data))
+                CpuDevice::F32(RawData::Own(raw))
             }
             DType::F64 => {
-                let data =
+                let raw =
                     RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.capacity());
-                CpuDevice::F64(RawData::Own(data))
+                CpuDevice::F64(RawData::Own(raw))
             }
             _ => {
                 todo!()
@@ -243,19 +364,19 @@ impl<A: TensorType, const N: usize, const M: usize> NdArray for Vec<[[A; N]; M]>
     fn to_cpu_device(self) -> CpuDevice {
         let device = match A::DTYPE {
             DType::F16 => {
-                let data =
+                let raw =
                     RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.capacity());
-                CpuDevice::F16(RawData::Own(data))
+                CpuDevice::F16(RawData::Own(raw))
             }
             DType::F32 => {
-                let data =
+                let raw =
                     RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.capacity());
-                CpuDevice::F32(RawData::Own(data))
+                CpuDevice::F32(RawData::Own(raw))
             }
             DType::F64 => {
-                let data =
+                let raw =
                     RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.capacity());
-                CpuDevice::F64(RawData::Own(data))
+                CpuDevice::F64(RawData::Own(raw))
             }
             _ => {
                 todo!()
@@ -271,12 +392,26 @@ impl<A: TensorType, const N: usize, const M: usize> NdArray for Vec<[[A; N]; M]>
 }
 
 #[derive(Clone)]
-enum RawData<P> {
+enum RawData<P: TensorType> {
     Own(RawPtr<P>),
     Ref(RawRef<P>),
 }
 
-impl<P> RawData<P> {
+impl<P: TensorType> RawData<P> {
+    pub(crate) fn from_bytes(raw: &[u8]) -> Self {
+        let len = raw.len();
+        assert_eq!(
+            len % GS_TYPE_SIZE[P::DTYPE as usize],
+            0,
+            "Length of slice must be multiple of f32 size"
+        );
+        let data = RawRef::from_raw_parts(
+            raw.as_ptr() as *mut P,
+            len / GS_TYPE_SIZE[P::DTYPE as usize],
+        );
+        RawData::Ref(data)
+    }
+
     pub(crate) fn as_ref(&self) -> RawData<P> {
         return match self {
             RawData::Own(v) => RawData::Ref(RawRef {
@@ -333,12 +468,12 @@ impl<P> RawData<P> {
 }
 
 #[derive(Clone)]
-struct RawRef<P> {
+struct RawRef<P: TensorType> {
     ptr: NonNull<P>,
     len: usize,
 }
 
-impl<P> RawRef<P> {
+impl<P: TensorType> RawRef<P> {
     fn as_slice(&self) -> &[P] {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const P, self.len) }
     }
@@ -361,7 +496,7 @@ impl<P> RawRef<P> {
     }
 }
 
-struct RawPtr<P> {
+struct RawPtr<P: TensorType> {
     ptr: NonNull<P>,
     len: usize,
     cap: usize,
@@ -371,19 +506,16 @@ impl<A: TensorType> NdArray for RawPtr<A> {
     fn to_cpu_device(self) -> CpuDevice {
         let device = match A::DTYPE {
             DType::F16 => {
-                let data =
-                    RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.cap());
-                CpuDevice::F16(RawData::Own(data))
+                let raw = RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.cap());
+                CpuDevice::F16(RawData::Own(raw))
             }
             DType::F32 => {
-                let data =
-                    RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.cap());
-                CpuDevice::F32(RawData::Own(data))
+                let raw = RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.cap());
+                CpuDevice::F32(RawData::Own(raw))
             }
             DType::F64 => {
-                let data =
-                    RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.cap());
-                CpuDevice::F64(RawData::Own(data))
+                let raw = RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.cap());
+                CpuDevice::F64(RawData::Own(raw))
             }
             _ => {
                 todo!()
@@ -398,7 +530,7 @@ impl<A: TensorType> NdArray for RawPtr<A> {
     }
 }
 
-impl<P> Clone for RawPtr<P> {
+impl<P: TensorType> Clone for RawPtr<P> {
     fn clone(&self) -> Self {
         use alloc::alloc::{alloc, handle_alloc_error, Layout};
         let layout = match Layout::array::<P>(self.cap) {
@@ -426,7 +558,7 @@ impl<P> Clone for RawPtr<P> {
     }
 }
 
-impl<P> RawPtr<P> {
+impl<P: TensorType> RawPtr<P> {
     fn with_capacity(capacity: usize) -> Self {
         if capacity == 0 {
             return Self {
@@ -577,6 +709,8 @@ pub enum CpuDevice {
 }
 
 impl CpuDevice {
+    pub(crate) fn from_bytes(raw: &[u8], dtype: DType) {}
+
     pub(crate) fn offset(&self, i: usize) -> CpuDevice {
         return match self {
             CpuDevice::F16(v) => CpuDevice::F16(v.offset(i)),
@@ -789,22 +923,22 @@ impl Tensor {
     fn arr<A: TensorType>(xs: Vec<A>) -> Self {
         let dim = [xs.len()];
         let shape = Shape::from_array(dim);
-        let data = xs.to_cpu_device();
-        Tensor::from_device(Device::Cpu(data), shape, A::DTYPE)
+        let cpu_dev = xs.to_cpu_device();
+        Tensor::from_device(Device::Cpu(cpu_dev), shape, A::DTYPE)
     }
 
     fn mat<A: TensorType, const N: usize>(xs: Vec<[A; N]>) -> Self {
         let dim = [xs.len(), N];
         let shape = Shape::from_array(dim);
-        let data = xs.to_cpu_device();
-        Tensor::from_device(Device::Cpu(data), shape, A::DTYPE)
+        let cpu_dev = xs.to_cpu_device();
+        Tensor::from_device(Device::Cpu(cpu_dev), shape, A::DTYPE)
     }
 
     fn cube<A: TensorType, const M: usize, const N: usize>(xs: Vec<[[A; N]; M]>) -> Self {
         let dim = [xs.len(), M, N];
         let shape = Shape::from_array(dim);
-        let data = xs.to_cpu_device();
-        Tensor::from_device(Device::Cpu(data), shape, A::DTYPE)
+        let cpu_dev = xs.to_cpu_device();
+        Tensor::from_device(Device::Cpu(cpu_dev), shape, A::DTYPE)
     }
 
     fn from_device(data: Device, s: Shape, dtype: DType) -> Self {
@@ -882,8 +1016,36 @@ impl Tensor {
     // }
 
     fn from_vec<A: TensorType>(v: Vec<A>, s: Shape) -> Self {
-        let data = v.to_cpu_device();
-        Tensor::from_device(Device::Cpu(data), s, A::DTYPE)
+        let cpu_dev = v.to_cpu_device();
+        Tensor::from_device(Device::Cpu(cpu_dev), s, A::DTYPE)
+    }
+
+    fn from_slice<A: TensorType>(v: &[A], s: Shape) -> Self {
+        let cpu_dev = v.to_cpu_device();
+        Tensor::from_device(Device::Cpu(cpu_dev), s, A::DTYPE)
+    }
+
+    fn from_bytes(v: &[u8], s: Shape, dtype: DType) -> Self {
+        match dtype {
+            DType::F16 => Tensor::from_device(
+                Device::Cpu(CpuDevice::F16(RawData::from_bytes(v))),
+                s,
+                dtype,
+            ),
+            DType::F32 => Tensor::from_device(
+                Device::Cpu(CpuDevice::F32(RawData::from_bytes(v))),
+                s,
+                dtype,
+            ),
+            DType::F64 => Tensor::from_device(
+                Device::Cpu(CpuDevice::F64(RawData::from_bytes(v))),
+                s,
+                dtype,
+            ),
+            _ => {
+                todo!()
+            }
+        }
     }
 
     // pub fn as_slice<A>(&self) -> &[A] {
@@ -899,6 +1061,9 @@ impl Tensor {
             DType::F16 => Self::from_elem(f16::zero(), d),
             DType::F32 => Self::from_elem(f32::zero(), d),
             DType::F64 => Self::from_elem(f64::zero(), d),
+            _ => {
+                todo!()
+            }
         }
     }
 
@@ -1495,7 +1660,7 @@ fn copy_strided_src<T: Copy>(src: &[T], dst: &mut [T], dst_offset: usize, src_d:
     }
 }
 
-impl<T> Drop for RawData<T> {
+impl<T: TensorType> Drop for RawData<T> {
     fn drop(&mut self) {
         match self {
             RawData::Own(v) => drop(v),
@@ -1504,7 +1669,7 @@ impl<T> Drop for RawData<T> {
     }
 }
 
-impl<T> Drop for RawPtr<T> {
+impl<T: TensorType> Drop for RawPtr<T> {
     fn drop(&mut self) {
         use alloc::alloc::{dealloc, Layout};
         let alloc_size = self.cap * core::mem::size_of::<T>();
@@ -1568,8 +1733,8 @@ mod tests {
 
     #[test]
     fn test_rawten() {
-        let mut t = RawPtr::<u32>::with_capacity(10);
-        t.fill(3, 10);
+        let mut t = RawPtr::<f32>::with_capacity(10);
+        t.fill(3.0, 10);
         // println!("t:{:?}", t.take_as_vec());
     }
 
@@ -1762,6 +1927,15 @@ mod tests {
         // a.as_slice_mut()[1] = 100;
         // println!("{:?}", a);
         // println!("{:?}", b);
+        Ok(())
+    }
+
+    #[test]
+    fn test_slice() -> GResult<()> {
+        let mut a = vec![1.0, 2.0, 3.0, 4.0];
+        let t = Tensor::from_slice(&a, Shape::from_array([2, 2]));
+        a[1] = 15.0;
+        println!("t:{:?}", t);
         Ok(())
     }
 }
