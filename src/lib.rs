@@ -32,7 +32,7 @@ pub enum DType {
     TypeCount,
 }
 
-const GS_TYPE_SIZE: [usize; DType::TypeCount as usize] = [
+pub const GS_TYPE_SIZE: [usize; DType::TypeCount as usize] = [
     // std::mem::size_of::<i8>(),
     // std::mem::size_of::<i16>(),
     // std::mem::size_of::<i32>(),
@@ -1015,17 +1015,17 @@ impl Tensor {
     //     Self::with_shape(result, d)
     // }
 
-    fn from_vec<A: TensorType>(v: Vec<A>, s: Shape) -> Self {
+    pub fn from_vec<A: TensorType>(v: Vec<A>, s: Shape) -> Self {
         let cpu_dev = v.to_cpu_device();
         Tensor::from_device(Device::Cpu(cpu_dev), s, A::DTYPE)
     }
 
-    fn from_slice<A: TensorType>(v: &[A], s: Shape) -> Self {
+    pub fn from_slice<A: TensorType>(v: &[A], s: Shape) -> Self {
         let cpu_dev = v.to_cpu_device();
         Tensor::from_device(Device::Cpu(cpu_dev), s, A::DTYPE)
     }
 
-    fn from_bytes(v: &[u8], s: Shape, dtype: DType) -> Self {
+    pub fn from_bytes(v: &[u8], s: Shape, dtype: DType) -> Self {
         match dtype {
             DType::F16 => Tensor::from_device(
                 Device::Cpu(CpuDevice::F16(RawData::from_bytes(v))),
