@@ -452,6 +452,13 @@ impl<P: TensorType> RawData<P> {
         };
     }
 
+    fn as_bytes_mut(&self) -> &mut [u8] {
+        return match self {
+            RawData::Own(v) => v.as_bytes_mut(),
+            RawData::Ref(v) => v.as_bytes_mut(),
+        };
+    }
+
     fn as_slice(&self) -> &[P] {
         return match self {
             RawData::Own(v) => v.as_slice(),
@@ -480,6 +487,15 @@ impl<P: TensorType> RawRef<P> {
 
     fn as_slice_mut(&mut self) -> &mut [P] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut P, self.len) }
+    }
+
+    fn as_bytes_mut(&self) -> &mut [u8] {
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.ptr.as_ptr() as *mut u8,
+                self.len * std::mem::size_of::<P>(),
+            )
+        }
     }
 
     fn to_rawdata(self) -> RawData<P> {
@@ -595,6 +611,15 @@ impl<P: TensorType> RawPtr<P> {
 
     fn as_slice_mut(&mut self) -> &mut [P] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut P, self.len) }
+    }
+
+    fn as_bytes_mut(&self) -> &mut [u8] {
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.ptr.as_ptr() as *mut u8,
+                self.len * std::mem::size_of::<P>(),
+            )
+        }
     }
 
     pub(crate) fn as_ptr(&self) -> *const P {
@@ -719,6 +744,14 @@ impl CpuDevice {
         };
     }
 
+    pub(crate) fn as_bytes_mut(&self) -> &mut [u8] {
+        return match self {
+            CpuDevice::F16(v) => v.as_bytes_mut(),
+            CpuDevice::F32(v) => v.as_bytes_mut(),
+            CpuDevice::F64(v) => v.as_bytes_mut(),
+        };
+    }
+
     pub(crate) fn as_ref(&self) -> CpuDevice {
         return match self {
             CpuDevice::F16(v) => CpuDevice::F16(v.as_ref()),
@@ -806,14 +839,14 @@ enum Device {
 }
 
 impl Device {
-    // pub(crate) fn as_ptr(&self) -> NonNull<A> {
-    //     return match self {
-    //         Storate::Cpu(v) => v.as_ptr(),
-    //         Storate::Gpu() => {
-    //             todo!()
-    //         }
-    //     };
-    // }
+    pub(crate) fn as_bytes_mut(&self) -> &mut [u8] {
+        return match self {
+            Device::Cpu(v) => v.as_bytes_mut(),
+            Device::Gpu() => {
+                todo!()
+            }
+        };
+    }
 
     pub(crate) fn offset(&self, i: usize) -> Device {
         return match self {
@@ -1048,9 +1081,9 @@ impl Tensor {
         }
     }
 
-    // pub fn as_slice<A>(&self) -> &[A] {
-    //     self.data.as_slice()
-    // }
+    pub fn as_bytes_mut(&self) -> &mut [u8] {
+        self.device().as_bytes_mut()
+    }
 
     // pub fn as_slice_mut(&mut self) -> &mut [A] {
     //     self.data.as_slice_mut()
@@ -1936,6 +1969,9 @@ mod tests {
         let t = Tensor::from_slice(&a, Shape::from_array([2, 2]));
         a[1] = 15.0;
         println!("t:{:?}", t);
+
+        let v = t.as_bytes_mut();
+        println!("v:{:?}", v);
         Ok(())
     }
 }
