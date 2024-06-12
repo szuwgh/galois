@@ -23,6 +23,8 @@ mod tensor;
 use half::f16;
 use num_traits::ToPrimitive;
 
+pub type F16 = half::f16;
+
 #[derive(Debug, Clone, Copy)]
 #[repr(usize)]
 pub enum DType {
@@ -445,6 +447,13 @@ impl<P: TensorType> RawData<P> {
         };
     }
 
+    pub(crate) fn nbytes(&self) -> usize {
+        return match self {
+            RawData::Own(v) => v.nbytes(),
+            RawData::Ref(v) => v.nbytes(),
+        };
+    }
+
     pub(crate) fn len(&self) -> usize {
         return match self {
             RawData::Own(v) => v.len,
@@ -509,6 +518,10 @@ impl<P: TensorType> RawRef<P> {
                 len: length,
             }
         }
+    }
+
+    fn nbytes(&self) -> usize {
+        self.len * std::mem::size_of::<P>()
     }
 }
 
@@ -620,6 +633,10 @@ impl<P: TensorType> RawPtr<P> {
                 self.len * std::mem::size_of::<P>(),
             )
         }
+    }
+
+    fn nbytes(&self) -> usize {
+        self.len * std::mem::size_of::<P>()
     }
 
     pub(crate) fn as_ptr(&self) -> *const P {
@@ -744,6 +761,14 @@ impl CpuDevice {
         };
     }
 
+    pub(crate) fn nbytes(&self) -> usize {
+        return match self {
+            CpuDevice::F16(v) => v.nbytes(),
+            CpuDevice::F32(v) => v.nbytes(),
+            CpuDevice::F64(v) => v.nbytes(),
+        };
+    }
+
     pub(crate) fn as_bytes_mut(&self) -> &mut [u8] {
         return match self {
             CpuDevice::F16(v) => v.as_bytes_mut(),
@@ -842,6 +867,15 @@ impl Device {
     pub(crate) fn as_bytes_mut(&self) -> &mut [u8] {
         return match self {
             Device::Cpu(v) => v.as_bytes_mut(),
+            Device::Gpu() => {
+                todo!()
+            }
+        };
+    }
+
+    pub(crate) fn nbytes(&self) -> usize {
+        return match self {
+            Device::Cpu(v) => v.nbytes(),
             Device::Gpu() => {
                 todo!()
             }
@@ -1079,6 +1113,10 @@ impl Tensor {
                 todo!()
             }
         }
+    }
+
+    pub fn nbytes(&self) -> usize {
+        self.device().nbytes()
     }
 
     pub fn as_bytes_mut(&self) -> &mut [u8] {
