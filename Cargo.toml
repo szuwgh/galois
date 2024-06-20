@@ -12,3 +12,4 @@ half = { version = "2.3.1", features = ["num-traits", "use-intrinsics", "rand_di
 num-traits = "0.2.15"
 gemm = { version = "0.17.0", features = ["wasm-simd128-enable"] }
 num_cpus = "1.15.0"
+rayon = "1.7.0"

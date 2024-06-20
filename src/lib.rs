@@ -25,7 +25,7 @@ use num_traits::ToPrimitive;
 
 pub type F16 = half::f16;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
 pub enum DType {
     F16,
@@ -505,6 +505,10 @@ impl<P: TensorType> RawRef<P> {
                 self.len * std::mem::size_of::<P>(),
             )
         }
+    }
+
+    pub(crate) fn as_ptr(&self) -> NonNull<P> {
+        self.ptr
     }
 
     fn to_rawdata(self) -> RawData<P> {
@@ -1123,9 +1127,12 @@ impl Tensor {
         self.device().as_bytes_mut()
     }
 
-    // pub fn as_slice_mut(&mut self) -> &mut [A] {
-    //     self.data.as_slice_mut()
-    // }
+    pub unsafe fn as_slice_mut<T>(&self) -> &mut [T] {
+        let bytes = self.as_bytes_mut();
+        assert!(bytes.as_ptr() as usize % std::mem::align_of::<f32>() == 0);
+        let len = bytes.len() / std::mem::size_of::<T>();
+        std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, len)
+    }
 
     pub fn zeros(d: Shape, dtype: DType) -> Self {
         match dtype {

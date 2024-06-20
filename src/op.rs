@@ -1,10 +1,147 @@
 use std::ops::Neg;
 
+use crate::error::GResult;
+use crate::Device;
 //use super::broadcast::{broadcasting_binary_op, general_broadcasting};
-use super::Tensor;
+use crate::CpuDevice;
+use crate::Dim;
+use crate::Tensor;
 use crate::TensorType;
 use half::f16;
 use num_traits::Float;
+use rayon::prelude::*;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamsConv1D {
+    pub(crate) b_size: usize,
+    // Maybe we should have a version without l_in as this bit depends on the input and not only on
+    // the weights.
+    pub(crate) l_in: usize,
+    pub(crate) c_out: usize,
+    pub(crate) c_in: usize,
+    pub(crate) k_size: usize,
+    pub(crate) padding: usize,
+    pub(crate) stride: usize,
+    pub(crate) dilation: usize,
+}
+
+impl ParamsConv1D {
+    pub(crate) fn l_out(&self) -> usize {
+        (self.l_in + 2 * self.padding - self.dilation * (self.k_size - 1) - 1) / self.stride + 1
+    }
+
+    pub(crate) fn out_dims(&self) -> Vec<usize> {
+        let l_out = self.l_out();
+        vec![self.b_size, self.c_out, l_out]
+    }
+}
+
+struct Conv1D(ParamsConv1D);
+
+impl Map2 for Conv1D {
+    const OP: &'static str = "conv1d";
+    fn f<T: TensorType>(
+        &self,
+        inp: &[T],
+        inp_d: &Dim,
+        k: &[T],
+        k_d: &Dim,
+        dst: &mut [T],
+    ) -> GResult<()> {
+        let p = &self.0;
+        // let inp = &inp[inp_l.start_offset()..];
+        // let k = &k[k_l.start_offset()..];
+        let (inp_s0, inp_s1, inp_s2) = (inp_d.stride()[0], inp_d.stride()[1], inp_d.stride()[2]);
+        let (k_s0, k_s1, k_s2) = (k_d.stride()[0], k_d.stride()[1], k_d.stride()[2]);
+        let l_out = p.l_out();
+        let dst_elems = p.c_out * l_out * p.b_size;
+        assert!(dst.len() == dst_elems);
+        // The output shape is [b_size, c_out, l_out]
+        // let dst = vec![T::zero(); dst_elems];
+
+        // TODO: Avoid making this copy if `inp` already has the appropriate layout.
+        let mut inp_cont = vec![T::zero(); p.b_size * p.c_in * p.l_in];
+        for b_idx in 0..p.b_size {
+            for src_l in 0..p.l_in {
+                for src_c_idx in 0..p.c_in {
+                    let inp_idx = b_idx * inp_s0 + src_c_idx * inp_s1 + src_l * inp_s2;
+                    inp_cont[b_idx * p.l_in * p.c_in + src_l * p.c_in + src_c_idx] = inp[inp_idx]
+                }
+            }
+        }
+
+        for offset in 0..p.k_size {
+            (0..p.c_out).into_par_iter().for_each(|dst_c_idx| {
+                let dst_idx = dst_c_idx * l_out;
+                let k_cont = (0..p.c_in)
+                    .map(|c_in_idx| k[dst_c_idx * k_s0 + c_in_idx * k_s1 + offset * k_s2])
+                    .collect::<Vec<_>>();
+                for b_idx in 0..p.b_size {
+                    let dst_idx = dst_idx + b_idx * p.c_out * l_out;
+                    for dst_l in 0..l_out {
+                        let dst_idx = dst_idx + dst_l;
+                        let src_l = p.stride * dst_l + offset * p.dilation;
+                        if src_l < p.padding || src_l >= p.padding + p.l_in {
+                            continue;
+                        }
+                        let src_l = src_l - p.padding;
+                        let inp_cont = &inp_cont[b_idx * p.l_in * p.c_in + src_l * p.c_in..];
+                        assert!(inp_cont.len() >= p.c_in);
+                        assert!(k_cont.len() >= p.c_in);
+                        let mut d = T::zero();
+                        unsafe { T::vec_dot(inp_cont.as_ptr(), k_cont.as_ptr(), &mut d, p.c_in) }
+                        let dst_p = dst.as_ptr();
+                        // Safety: dst_idx are uniques per dst_c_idx which is used to parallelise
+                        // the different tasks so no two threads can try to write at the same
+                        // location.
+                        unsafe {
+                            let ptr = dst_p.add(dst_idx) as *mut T;
+                            *ptr += d
+                        }
+                    }
+                }
+            })
+        }
+        Ok(())
+    }
+}
+
+trait Map2 {
+    const OP: &'static str;
+    fn f<T: TensorType>(
+        &self,
+        inp: &[T],
+        inp_l: &Dim,
+        k: &[T],
+        k_l: &Dim,
+        dst: &mut [T],
+    ) -> GResult<()>;
+
+    fn map(
+        &self,
+        dev1: &CpuDevice,
+        d1: &Dim,
+        dev2: &CpuDevice,
+        d2: &Dim,
+        dst: &mut CpuDevice,
+    ) -> GResult<()> {
+        match (dev1, dev2, dst) {
+            (CpuDevice::F16(v1), CpuDevice::F16(v2), CpuDevice::F16(d)) => {
+                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut())
+            }
+            (CpuDevice::F32(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut())
+            }
+            _ => {
+                todo!()
+            }
+        }
+    }
+}
+
+pub fn conv_1d_1s(a: &Tensor, b: Tensor, dst: &mut Tensor) -> GResult<()> {
+    Ok(())
+}
 
 // trait Map {
 //     fn f<T: TensorType>(&self, t: &Tensor) -> LNResult<DTensor<T>>;

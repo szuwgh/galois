@@ -25,7 +25,7 @@ pub fn stride_offset(n: usize, stride: usize) -> isize {
 #[derive(Clone, Debug)]
 pub struct Dim {
     pub(crate) s: Shape,
-    pub(crate) stride: Box<[usize]>,
+    pub(crate) stride: [usize; 4],
 }
 
 impl Dim {
@@ -145,11 +145,15 @@ impl Dim {
 }
 
 #[derive(Clone, Debug)]
-pub struct Shape(pub(crate) Box<[usize]>);
+pub struct Shape(pub(crate) [usize; 4]);
 
 impl Shape {
     pub fn from_vec(v: Vec<usize>) -> Shape {
-        Shape(v.into_boxed_slice())
+        let mut s = [1usize; 4];
+        for i in 0..v.len() {
+            s[i] = v[i]
+        }
+        Shape(s)
     }
 
     pub fn from_array<const N: usize>(v: [usize; N]) -> Shape {
