@@ -1371,7 +1371,7 @@ impl Tensor {
         }
     }
 
-    fn into_transpose(self, d1: usize, d2: usize) -> GResult<Tensor> {
+    fn into_transpose(mut self, d1: usize, d2: usize) -> GResult<Tensor> {
         if d1 > self.size() {
             return Err(GError::DimOutOfRange {
                 shape: self.dim().shape().clone(),

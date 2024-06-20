@@ -1,5 +1,7 @@
 use super::error::{GError, GResult, ShapeErrorKind};
 
+const MAX_DIM: usize = 4;
+
 pub(crate) fn zip<I, J>(i: I, j: J) -> std::iter::Zip<I::IntoIter, J::IntoIter>
 where
     I: IntoIterator,
@@ -25,7 +27,7 @@ pub fn stride_offset(n: usize, stride: usize) -> isize {
 #[derive(Clone, Debug)]
 pub struct Dim {
     pub(crate) s: Shape,
-    pub(crate) stride: [usize; 4],
+    pub(crate) stride: Layout,
 }
 
 impl Dim {
@@ -82,7 +84,7 @@ impl Dim {
         })
     }
 
-    pub fn transpose(&self, d1: usize, d2: usize) -> GResult<Dim> {
+    pub fn transpose(&mut self, d1: usize, d2: usize) -> GResult<Dim> {
         let rank = self.s.size();
         if rank <= d1 || rank <= d2 {
             return Err(GError::UnexpectedNumberOfDims {
@@ -91,13 +93,13 @@ impl Dim {
                 shape: self.shape().clone(),
             });
         }
-        let mut stride = self.stride().to_vec();
-        let mut dims = self.shape().as_slice().to_vec();
+        let mut stride = self.stride.clone();
+        let dims = self.shape_mut().as_slice_mut();
         dims.swap(d1, d2);
         stride.swap(d1, d2);
         Ok(Self {
-            s: Shape::from_vec(dims),
-            stride: stride.into_boxed_slice(),
+            s: Shape::from_slice(dims),
+            stride: stride,
         })
     }
 
@@ -144,20 +146,35 @@ impl Dim {
     }
 }
 
+trait One {
+    fn one() -> Self;
+}
+
+pub type Layout = [usize; MAX_DIM];
+
+impl One for Layout {
+    fn one() -> Self {
+        [1usize; MAX_DIM]
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct Shape(pub(crate) [usize; 4]);
+pub struct Shape(pub(crate) Layout);
 
 impl Shape {
     pub fn from_vec(v: Vec<usize>) -> Shape {
+        let mut s = Layout::one();
+        s.iter_mut().zip(&v).for_each(|(si, vi)| *si = *vi);
+        Shape(s)
+    }
+
+    pub fn from_array<const N: usize>(v: [usize; N]) -> Shape {
         let mut s = [1usize; 4];
         for i in 0..v.len() {
             s[i] = v[i]
         }
         Shape(s)
-    }
-
-    pub fn from_array<const N: usize>(v: [usize; N]) -> Shape {
-        Shape::from_vec(v.to_vec())
+        // Shape::from_vec(v.to_vec())
     }
 
     pub fn from_slice(v: &[usize]) -> Shape {
@@ -219,8 +236,8 @@ impl PartialEq<Shape> for Shape {
     }
 }
 
-pub fn select_axis(src: &[usize], a: Axis) -> Vec<usize> {
-    let mut dst = vec![0; src.len() - 1];
+pub fn select_axis(src: &[usize], a: Axis) -> Layout {
+    let mut dst: Layout = Layout::default(); //vec![0; src.len() - 1];
     dst[..a.index()].copy_from_slice(&src[..a.index()]);
     dst[a.index()..].copy_from_slice(&src[a.index() + 1..]);
     dst
@@ -288,8 +305,8 @@ impl Shape {
     }
 
     // [a, b, c] => strides [b * c, c, 1]
-    pub fn strides(&self) -> Box<[usize]> {
-        let mut x = vec![0; self.dim()];
+    pub fn strides(&self) -> [usize; 4] {
+        let mut x = [0usize; 4]; //vec![0; self.dim()];
         let s = self.as_slice().iter().rev();
         let mut prod = 1;
         let mut temp = 1;
@@ -298,7 +315,7 @@ impl Shape {
             *m = prod;
             temp = *dim;
         }
-        x.into_boxed_slice()
+        x
     }
 
     pub fn dim(&self) -> usize {
