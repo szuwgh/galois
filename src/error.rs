@@ -58,6 +58,14 @@ pub enum GError {
         len: usize,
         msg: &'static str,
     },
+    #[error("conv1d invalid args {msg}: inp: {inp_shape:?}, k: {k_shape:?}, pad: {padding}, stride: {stride}")]
+    Conv1dInvalidArgs {
+        inp_shape: Vec<usize>,
+        k_shape: Vec<usize>,
+        padding: usize,
+        stride: usize,
+        msg: &'static str,
+    },
 }
 
 impl From<&str> for GError {

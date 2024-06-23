@@ -2,11 +2,13 @@ use std::ops::Neg;
 
 use crate::error::GResult;
 use crate::Device;
+use crate::GError;
 //use super::broadcast::{broadcasting_binary_op, general_broadcasting};
 use crate::CpuDevice;
 use crate::Dim;
 use crate::Tensor;
 use crate::TensorType;
+use crate::F16;
 use half::f16;
 use num_traits::Float;
 use rayon::prelude::*;
@@ -27,6 +29,9 @@ pub struct ParamsConv1D {
 
 impl ParamsConv1D {
     pub(crate) fn l_out(&self) -> usize {
+        if self.l_in == 1 {
+            return 1;
+        }
         (self.l_in + 2 * self.padding - self.dilation * (self.k_size - 1) - 1) / self.stride + 1
     }
 
@@ -51,8 +56,8 @@ impl Map2 for Conv1D {
         let p = &self.0;
         // let inp = &inp[inp_l.start_offset()..];
         // let k = &k[k_l.start_offset()..];
-        let (inp_s0, inp_s1, inp_s2) = (inp_d.stride()[0], inp_d.stride()[1], inp_d.stride()[2]);
-        let (k_s0, k_s1, k_s2) = (k_d.stride()[0], k_d.stride()[1], k_d.stride()[2]);
+        let (inp_s0, inp_s1, inp_s2) = inp_d.stride_3d();
+        let (k_s0, k_s1, k_s2) = k_d.stride_3d();
         let l_out = p.l_out();
         let dst_elems = p.c_out * l_out * p.b_size;
         assert!(dst.len() == dst_elems);
@@ -104,6 +109,17 @@ impl Map2 for Conv1D {
         }
         Ok(())
     }
+
+    fn f_f16_sf32(
+        &self,
+        inp: &[f32],
+        inp_d: &Dim,
+        k: &[f16],
+        k_d: &Dim,
+        dst: &mut [f32],
+    ) -> GResult<()> {
+        Ok(())
+    }
 }
 
 trait Map2 {
@@ -115,6 +131,15 @@ trait Map2 {
         k: &[T],
         k_l: &Dim,
         dst: &mut [T],
+    ) -> GResult<()>;
+
+    fn f_f16_sf32(
+        &self,
+        inp: &[f32],
+        inp_l: &Dim,
+        k: &[f16],
+        k_l: &Dim,
+        dst: &mut [f32],
     ) -> GResult<()>;
 
     fn map(
@@ -132,6 +157,9 @@ trait Map2 {
             (CpuDevice::F32(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
                 self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut())
             }
+            (CpuDevice::F32(v1), CpuDevice::F16(v2), CpuDevice::F32(d)) => {
+                self.f_f16_sf32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut())
+            }
             _ => {
                 todo!()
             }
@@ -139,7 +167,49 @@ trait Map2 {
     }
 }
 
-pub fn conv_1d_1s(a: &Tensor, b: Tensor, dst: &mut Tensor) -> GResult<()> {
+pub fn conv_1d_1s(
+    src: &Tensor,
+    kernel: &Tensor,
+    dst: &mut Tensor,
+    padding: usize,
+    stride: usize,
+    dilation: usize,
+    groups: usize,
+) -> GResult<()> {
+    let (c_out, c_in_k, k_size) = kernel.dim3();
+    println!("c_out:{}, c_in_k:{}, k_size:{}", c_out, c_in_k, k_size);
+    let (b_size, c_in, l_in) = src.dim3();
+    println!("b_size:{}, c_in:{}, l_in:{}", b_size, c_in, l_in);
+    if c_in != c_in_k * groups {
+        return Err(GError::Conv1dInvalidArgs {
+            inp_shape: src.shape().to_vec(),
+            k_shape: kernel.shape().to_vec(),
+            padding,
+            stride,
+            msg: "the number of in-channels on the input doesn't match the kernel size",
+        });
+    }
+
+    let params = ParamsConv1D {
+        b_size,
+        l_in,
+        c_out: c_out / groups,
+        c_in: c_in / groups,
+        k_size,
+        padding,
+        stride,
+        dilation,
+    };
+
+    match (src.device(), kernel.device(), dst.device_mut()) {
+        (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
+            Conv1D(params).map(s, src.dim(), k, kernel.dim(), d)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+
     Ok(())
 }
 

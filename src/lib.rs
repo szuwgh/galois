@@ -180,6 +180,13 @@ pub trait TensorType:
             *res += *lhs.add(i) * *rhs.add(i)
         }
     }
+
+    unsafe fn vec_dot_f16_rf32(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
+        *res = f32::zero();
+        for i in 0..len {
+            *res += (*lhs.add(i) * *rhs.add(i)).to_f32()
+        }
+    }
 }
 
 pub trait Similarity {
@@ -335,18 +342,27 @@ impl<A: TensorType, const N: usize> NdArray for Vec<[A; N]> {
     fn to_cpu_device(self) -> CpuDevice {
         let device = match A::DTYPE {
             DType::F16 => {
-                let raw =
-                    RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.capacity());
+                let raw = RawPtr::from_raw_parts(
+                    self.as_ptr() as *mut f16,
+                    self.len() * N,
+                    self.capacity(),
+                );
                 CpuDevice::F16(RawData::Own(raw))
             }
             DType::F32 => {
-                let raw =
-                    RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.capacity());
+                let raw = RawPtr::from_raw_parts(
+                    self.as_ptr() as *mut f32,
+                    self.len() * N,
+                    self.capacity(),
+                );
                 CpuDevice::F32(RawData::Own(raw))
             }
             DType::F64 => {
-                let raw =
-                    RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.capacity());
+                let raw = RawPtr::from_raw_parts(
+                    self.as_ptr() as *mut f64,
+                    self.len() * N,
+                    self.capacity(),
+                );
                 CpuDevice::F64(RawData::Own(raw))
             }
             _ => {
@@ -366,18 +382,27 @@ impl<A: TensorType, const N: usize, const M: usize> NdArray for Vec<[[A; N]; M]>
     fn to_cpu_device(self) -> CpuDevice {
         let device = match A::DTYPE {
             DType::F16 => {
-                let raw =
-                    RawPtr::from_raw_parts(self.as_ptr() as *mut f16, self.len(), self.capacity());
+                let raw = RawPtr::from_raw_parts(
+                    self.as_ptr() as *mut f16,
+                    self.len() * N * M,
+                    self.capacity(),
+                );
                 CpuDevice::F16(RawData::Own(raw))
             }
             DType::F32 => {
-                let raw =
-                    RawPtr::from_raw_parts(self.as_ptr() as *mut f32, self.len(), self.capacity());
+                let raw = RawPtr::from_raw_parts(
+                    self.as_ptr() as *mut f32,
+                    self.len() * N * M,
+                    self.capacity(),
+                );
                 CpuDevice::F32(RawData::Own(raw))
             }
             DType::F64 => {
-                let raw =
-                    RawPtr::from_raw_parts(self.as_ptr() as *mut f64, self.len(), self.capacity());
+                let raw = RawPtr::from_raw_parts(
+                    self.as_ptr() as *mut f64,
+                    self.len() * N * M,
+                    self.capacity(),
+                );
                 CpuDevice::F64(RawData::Own(raw))
             }
             _ => {
@@ -1131,6 +1156,10 @@ impl Tensor {
         &self.dim.shape()
     }
 
+    pub fn dim3(&self) -> (usize, usize, usize) {
+        self.dim.dim3()
+    }
+
     pub fn n_dims(&self) -> usize {
         self.dim.n_dims()
     }
@@ -1462,7 +1491,6 @@ impl Tensor {
         //     len: self.data.len() - offset,
         // };
 
-        println!("offset:{}", offset);
         let n_dims = self.dim.n_dims() - 1;
         Tensor {
             dtype: self.dtype(),

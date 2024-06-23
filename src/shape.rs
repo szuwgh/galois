@@ -44,6 +44,14 @@ impl Dim {
         &self.stride[..self.n_dims]
     }
 
+    pub fn stride_3d(&self) -> (usize, usize, usize) {
+        dims3(&self.stride)
+    }
+
+    pub fn dim3(&self) -> (usize, usize, usize) {
+        self.s.dims3()
+    }
+
     pub fn n_dims(&self) -> usize {
         self.n_dims
     }
@@ -191,6 +199,10 @@ impl Shape {
         dims4(&self.0)
     }
 
+    pub fn dims3(&self) -> (usize, usize, usize) {
+        dims3(&self.0)
+    }
+
     pub fn dims2(&self) -> (usize, usize) {
         dims2(&self.0)
     }
@@ -307,6 +319,11 @@ impl Shape {
         }
         offset
     }
+}
+
+pub fn dims3(s: &[usize]) -> (usize, usize, usize) {
+    assert!(s.len() >= 3);
+    (s[0], s[1], s[2])
 }
 
 pub fn dims2(s: &[usize]) -> (usize, usize) {
