@@ -147,6 +147,8 @@ impl Map2 for Conv1D {
         println!("nh:{}", nh);
         println!("dst.len:{}", dst.len());
 
+        println!("nb00:{},nb01:{},nb02:{}", nb00, nb01, nb02);
+
         let mut ker_f16: Vec<f16> = vec![f16::from_f32(0.0); ne02 * ew0 * ne00];
 
         for i02 in 0..ne02 {
@@ -166,14 +168,17 @@ impl Map2 for Conv1D {
             }
         }
 
+        let kernel_data: f32 = ker_f16.iter().map(|e| e.to_f32()).sum();
+        println!("kernel_data:{:?}", kernel_data);
+
         let mut inp_f16: Vec<f16> =
             vec![f16::from_f32(0.0); (ne10 + nh as usize) * ew0 * ne11 + ew0];
         for i11 in 0..ne11 {
             let src_chunk = &inp[i11 * nb11..];
 
-            for (i10, src_f32) in src_chunk.iter().enumerate() {
+            for i10 in 0..ne10 {
                 let index = (i10 + nh as usize) * ew0 + i11;
-                inp_f16[index] = f16::from_f32(*src_f32);
+                inp_f16[index] = f16::from_f32(src_chunk[i10]);
             }
         }
 
