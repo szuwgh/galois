@@ -181,10 +181,10 @@ pub trait TensorType:
         }
     }
 
-    unsafe fn vec_dot_f16_rf32(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
+    unsafe fn vec_dot_f16_f32(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
         *res = f32::zero();
         for i in 0..len {
-            *res += (*lhs.add(i) * *rhs.add(i)).to_f32()
+            *res += ((*lhs.add(i)).to_f32() * (*rhs.add(i)).to_f32());
         }
     }
 }
