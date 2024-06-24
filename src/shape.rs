@@ -275,9 +275,8 @@ impl Shape {
     pub fn strides(&self, n_dims: usize) -> [usize; 4] {
         let mut x: [usize; 4] = [0usize; 4];
         x[0] = 1;
-        for (int i = 1; i < GGML_MAX_DIMS; i++)
-        {
-            result->nb[i] = result->nb[i - 1] * result->ne[i - 1];
+        for i in 1..MAX_DIM {
+            x[i] = x[i - 1] * self.0[i - 1];
         }
         //vec![0; self.dim()];
         // let s = self.dims(n_dims).iter().rev();
@@ -288,7 +287,7 @@ impl Shape {
         //     *m = prod;
         //     temp = *dim;
         // }
-        // x
+        x
     }
 
     pub fn dim(&self) -> usize {
