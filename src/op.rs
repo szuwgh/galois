@@ -25,6 +25,11 @@ fn vec_cpy<T: Copy>(n: usize, y: &mut [T], x: &[T]) {
     }
 }
 
+#[inline]
+fn is_same_shape(a: &[usize], b: &[usize]) -> bool {
+    a == b
+}
+
 fn simd_vec_add_f32(inp1: &[f32], inp2: &[f32], dst: &mut [f32]) {
     dst.chunks_exact_mut(4)
         .zip(inp1.chunks_exact(4).cycle())
@@ -66,7 +71,12 @@ impl Map2 for Add {
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
-        todo!()
+        assert!(
+            is_same_shape(inp1_d.shape(), inp2_d.shape())
+                && is_same_shape(inp1_d.shape(), dst_d.shape())
+        );
+        simd_vec_add_f32(inp1, inp2, dst);
+        Ok(())
     }
 }
 
@@ -263,7 +273,7 @@ trait Map2 {
                 self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
-                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+                self.f_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::F16(v2), CpuDevice::F32(d)) => {
                 self.f_f16(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
@@ -275,7 +285,7 @@ trait Map2 {
     }
 }
 
-pub fn conv_1d_1s(src: &Tensor, kernel: &Tensor, dst: &mut Tensor) -> GResult<()> {
+pub fn galois_conv_1d_1s(src: &Tensor, kernel: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
     match (src.device(), kernel.device(), dst_device) {
         (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
@@ -288,7 +298,7 @@ pub fn conv_1d_1s(src: &Tensor, kernel: &Tensor, dst: &mut Tensor) -> GResult<()
     Ok(())
 }
 
-pub fn repeat(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+pub fn galois_repeat(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
     match (src.device(), dst_device) {
         (Device::Cpu(s), Device::Cpu(d)) => {
@@ -301,11 +311,11 @@ pub fn repeat(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn add(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+pub fn galois_add(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(d)) => {
-            Repeat.map(s, src.dim(), d, dst_dim)?;
+    match (a.device(), b.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
+            Add.map(s, a.dim(), k, b.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
