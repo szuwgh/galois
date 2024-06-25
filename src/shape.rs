@@ -52,6 +52,14 @@ impl Dim {
         dims2(&self.stride)
     }
 
+    pub fn stride_1d(&self) -> usize {
+        dims1(&self.stride)
+    }
+
+    pub fn dim4(&self) -> (usize, usize, usize, usize) {
+        self.s.dims4()
+    }
+
     pub fn dim3(&self) -> (usize, usize, usize) {
         self.s.dims3()
     }
@@ -334,16 +342,25 @@ impl Shape {
     }
 }
 
-pub fn dims3(s: &[usize]) -> (usize, usize, usize) {
-    assert!(s.len() >= 3);
-    (s[0], s[1], s[2])
+#[inline]
+pub fn dims1(s: &[usize]) -> usize {
+    assert!(s.len() >= 1);
+    s[0]
 }
 
+#[inline]
 pub fn dims2(s: &[usize]) -> (usize, usize) {
     assert!(s.len() >= 2);
     (s[0], s[1])
 }
 
+#[inline]
+pub fn dims3(s: &[usize]) -> (usize, usize, usize) {
+    assert!(s.len() >= 3);
+    (s[0], s[1], s[2])
+}
+
+#[inline]
 pub fn dims4(s: &[usize]) -> (usize, usize, usize, usize) {
     assert!(s.len() >= 4);
     (s[0], s[1], s[2], s[3])

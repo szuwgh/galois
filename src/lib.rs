@@ -1,11 +1,16 @@
 #![feature(concat_idents)]
 #![feature(non_null_convenience)]
+#![feature(portable_simd)]
+#![feature(slice_as_chunks)]
 mod broadcast;
 pub mod error;
 pub mod op;
 pub mod shape;
 mod simd;
-
+#[cfg(target_arch = "x86")]
+use core::arch::x86::*;
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
 mod zip;
 extern crate alloc;
 
@@ -13,8 +18,8 @@ use crate::error::{GError, GResult};
 use crate::shape::Dim;
 pub use crate::shape::{Axis, Shape};
 use crate::zip::Zip;
+use core::arch::x86_64::*;
 use core::ptr::{self, NonNull};
-
 use op::UnaryOp;
 use shape::ShapeIter;
 use std::fmt;
@@ -24,6 +29,10 @@ use half::f16;
 use num_traits::ToPrimitive;
 
 pub type F16 = half::f16;
+
+const STEP: usize = 32;
+const EPR: usize = 8;
+const ARR: usize = STEP / EPR;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
@@ -181,11 +190,57 @@ pub trait TensorType:
         }
     }
 
-    unsafe fn vec_dot_f16_f32(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
+    #[cfg(not(target_feature = "avx"))]
+    #[inline(always)]
+    unsafe fn vec_dot_f16(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
         *res = f32::zero();
         for i in 0..len {
             *res += ((*lhs.add(i)).to_f32() * (*rhs.add(i)).to_f32());
         }
+    }
+
+    #[cfg(target_feature = "avx")]
+    #[inline(always)]
+    unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: usize) {
+        let mut sumf = 0.0f32;
+        let np = k & !(STEP - 1);
+
+        let mut sum = [_mm256_setzero_ps(); ARR];
+        let mut ax = [_mm256_setzero_ps(); ARR];
+        let mut ay = [_mm256_setzero_ps(); ARR];
+
+        for i in (0..np).step_by(STEP) {
+            for j in 0..ARR {
+                ax[j] = _mm256_cvtph_ps(_mm_loadu_si128(a_row.add(i + j * EPR) as *const __m128i));
+                ay[j] = _mm256_cvtph_ps(_mm_loadu_si128(b_row.add(i + j * EPR) as *const __m128i));
+
+                sum[j] = _mm256_add_ps(_mm256_mul_ps(ax[j], ay[j]), sum[j]);
+            }
+        }
+
+        let mut offset = ARR >> 1;
+        for i in 0..offset {
+            sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
+        }
+        offset >>= 1;
+        for i in 0..offset {
+            sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
+        }
+        offset >>= 1;
+        for i in 0..offset {
+            sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
+        }
+        let t0 = _mm_add_ps(
+            _mm256_castps256_ps128(sum[0]),
+            _mm256_extractf128_ps(sum[0], 1),
+        );
+        let t1 = _mm_hadd_ps(t0, t0);
+        sumf = _mm_cvtss_f32(_mm_hadd_ps(t1, t1));
+
+        for i in np..k {
+            sumf += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
+        }
+        *c = sumf;
     }
 }
 
@@ -1049,6 +1104,10 @@ impl Tensor {
 
     fn device(&self) -> &Device {
         &self.data
+    }
+
+    fn device_dim(&mut self) -> (&mut Device, &Dim) {
+        (&mut self.data, &self.dim)
     }
 
     fn device_mut(&mut self) -> &mut Device {

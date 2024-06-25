@@ -13,39 +13,64 @@ use half::f16;
 use num_traits::Float;
 use rayon::prelude::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParamsConv1D {
-    pub(crate) b_size: usize,
-    // Maybe we should have a version without l_in as this bit depends on the input and not only on
-    // the weights.
-    pub(crate) l_in: usize,
-    pub(crate) c_out: usize,
-    pub(crate) c_in: usize,
-    pub(crate) k_size: usize,
-    pub(crate) padding: usize,
-    pub(crate) stride: usize,
-    pub(crate) dilation: usize,
-}
-
-impl ParamsConv1D {
-    pub(crate) fn l_out(&self) -> usize {
-        if self.l_in == 1 {
-            return 1;
-        }
-        (self.l_in + 2 * self.padding - self.dilation * (self.k_size - 1) - 1) / self.stride + 1
-    }
-
-    pub(crate) fn out_dims(&self) -> Vec<usize> {
-        let l_out = self.l_out();
-        vec![self.b_size, self.c_out, l_out]
-    }
-}
-
+#[inline]
 fn up32(n: i32) -> i32 {
     (n + 31) & !31
 }
 
-struct Conv1D(ParamsConv1D);
+#[inline]
+fn vec_cpy<T: Copy>(n: usize, y: &mut [T], x: &[T]) {
+    for i in 0..n {
+        y[i] = x[i];
+    }
+}
+
+fn simd_vec_add_f32(inp1: &[f32], inp2: &[f32], dst: &mut [f32]) {
+    dst.chunks_exact_mut(4)
+        .zip(inp1.chunks_exact(4).cycle())
+        .zip(inp2.chunks_exact(4).cycle())
+        .for_each(|((d, ia), ib)| {
+            let va = std::simd::f32x4::from_slice(ia);
+            let vb = std::simd::f32x4::from_slice(ib);
+            let vc = va + vb;
+            vc.copy_to_slice(d);
+        });
+    let dst_length = dst.len();
+    // 处理剩余部分
+    let remainder_a = &inp1[inp1.len() / 4 * 4..];
+    let remainder_b = &inp2[inp2.len() / 4 * 4..];
+    let remainder_result = &mut dst[dst_length / 4 * 4..];
+    for i in 0..remainder_a.len() {
+        remainder_result[i] = remainder_a[i] + remainder_b[i];
+    }
+}
+
+trait Op {
+    fn a();
+}
+
+impl Op for Tensor {
+    fn a() {}
+}
+
+struct Add;
+
+impl Map2 for Add {
+    const OP: &'static str = "add";
+    fn f_f32(
+        &self,
+        inp1: &[f32],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+}
+
+struct Conv1D;
 
 impl Map2 for Conv1D {
     const OP: &'static str = "conv1d";
@@ -56,65 +81,12 @@ impl Map2 for Conv1D {
         k: &[T],
         k_d: &Dim,
         dst: &mut [T],
+        dst_d: &Dim,
     ) -> GResult<()> {
-        let p = &self.0;
-        // let inp = &inp[inp_l.start_offset()..];
-        // let k = &k[k_l.start_offset()..];
-        let (inp_s0, inp_s1, inp_s2) = inp_d.stride_3d();
-        let (k_s0, k_s1, k_s2) = k_d.stride_3d();
-        let l_out = p.l_out();
-        let dst_elems = p.c_out * l_out * p.b_size;
-        assert!(dst.len() == dst_elems);
-        // The output shape is [b_size, c_out, l_out]
-        // let dst = vec![T::zero(); dst_elems];
-
-        // TODO: Avoid making this copy if `inp` already has the appropriate layout.
-        let mut inp_cont = vec![T::zero(); p.b_size * p.c_in * p.l_in];
-        for b_idx in 0..p.b_size {
-            for src_l in 0..p.l_in {
-                for src_c_idx in 0..p.c_in {
-                    let inp_idx = b_idx * inp_s0 + src_c_idx * inp_s1 + src_l * inp_s2;
-                    inp_cont[b_idx * p.l_in * p.c_in + src_l * p.c_in + src_c_idx] = inp[inp_idx]
-                }
-            }
-        }
-
-        for offset in 0..p.k_size {
-            (0..p.c_out).into_par_iter().for_each(|dst_c_idx| {
-                let dst_idx = dst_c_idx * l_out;
-                let k_cont = (0..p.c_in)
-                    .map(|c_in_idx| k[dst_c_idx * k_s0 + c_in_idx * k_s1 + offset * k_s2])
-                    .collect::<Vec<_>>();
-                for b_idx in 0..p.b_size {
-                    let dst_idx = dst_idx + b_idx * p.c_out * l_out;
-                    for dst_l in 0..l_out {
-                        let dst_idx = dst_idx + dst_l;
-                        let src_l = p.stride * dst_l + offset * p.dilation;
-                        if src_l < p.padding || src_l >= p.padding + p.l_in {
-                            continue;
-                        }
-                        let src_l = src_l - p.padding;
-                        let inp_cont = &inp_cont[b_idx * p.l_in * p.c_in + src_l * p.c_in..];
-                        assert!(inp_cont.len() >= p.c_in);
-                        assert!(k_cont.len() >= p.c_in);
-                        let mut d = T::zero();
-                        unsafe { T::vec_dot(inp_cont.as_ptr(), k_cont.as_ptr(), &mut d, p.c_in) }
-                        let dst_p = dst.as_ptr();
-                        // Safety: dst_idx are uniques per dst_c_idx which is used to parallelise
-                        // the different tasks so no two threads can try to write at the same
-                        // location.
-                        unsafe {
-                            let ptr = dst_p.add(dst_idx) as *mut T;
-                            *ptr += d
-                        }
-                    }
-                }
-            })
-        }
-        Ok(())
+        todo!()
     }
 
-    fn f_f16_sf32(
+    fn f_f16(
         &self,
         inp: &[f32],
         inp_d: &Dim,
@@ -126,8 +98,8 @@ impl Map2 for Conv1D {
         let (ne00, ne01, ne02) = k_d.dim3();
 
         let (ne10, ne11) = inp_d.dim2();
-        let (nb00, nb01, nb02) = k_d.stride_3d();
-        let (nb10, nb11) = inp_d.stride_2d();
+        let (_, nb01, nb02) = k_d.stride_3d();
+        let (_, nb11) = inp_d.stride_2d();
 
         let nb1 = dst_d.stride()[1];
 
@@ -138,16 +110,6 @@ impl Map2 for Conv1D {
         let nh: i32 = (nk / 2) as i32;
 
         let ew0 = up32(ne01 as i32) as usize;
-        println!("ne10:{}", ne10);
-        println!("ne00:{}, ne01:{}, ne02:{}", ne00, ne01, ne02);
-        println!("nb1:{}", nb1);
-        println!("ew0:{}", ew0);
-        println!("inp:{}", inp.len());
-        println!("kernel:{}", kernel.len());
-        println!("nh:{}", nh);
-        println!("dst.len:{}", dst.len());
-
-        println!("nb00:{},nb01:{},nb02:{}", nb00, nb01, nb02);
 
         let mut ker_f16: Vec<f16> = vec![f16::from_f32(0.0); ne02 * ew0 * ne00];
 
@@ -163,13 +125,8 @@ impl Map2 for Conv1D {
                 for i00 in 0..ne00 {
                     dst_slice[i00 * ew0 + i01] = src_slice[i00];
                 }
-                // 将 src_slice 中的元素复制到 dst_slice 中
-                // dst_slice.copy_from_slice(&src_slice);
             }
         }
-
-        let kernel_data: f32 = ker_f16.iter().map(|e| e.to_f32()).sum();
-        println!("kernel_data:{:?}", kernel_data);
 
         let mut inp_f16: Vec<f16> =
             vec![f16::from_f32(0.0); (ne10 + nh as usize) * ew0 * ne11 + ew0];
@@ -182,8 +139,6 @@ impl Map2 for Conv1D {
             }
         }
 
-        // let inp_f16: Vec<f16> = inp.iter().map(|&val| f16::from_f32(val)).collect();
-
         // total rows in dst
         let nr = ne02;
 
@@ -193,12 +148,7 @@ impl Map2 for Conv1D {
         // row range for this thread
         let ir0 = dr * ith;
         let ir1 = std::cmp::min(ir0 + dr, nr);
-        println!("nr:{}", nr);
-        println!("dr:{}", dr);
-        println!("ir0:{}", ir0);
-        println!("ir1:{}", ir1);
 
-        let mut xxx = 0.0;
         for i1 in ir0..ir1 {
             let dst_data = &mut dst[i1 * nb1..];
 
@@ -208,18 +158,55 @@ impl Map2 for Conv1D {
                     let mut v = 0.0f32;
                     let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
                     let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-
                     let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
                     let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-                    // println!("wdata1_idx:{}", wdata1_idx);
-                    //println!("wdata2_idx:{}", wdata2_idx);
-                    unsafe { f16::vec_dot_f16_f32(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+                    unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
                     dst_data[i0] += v;
-                    xxx += v;
                 }
             }
         }
-        println!("xxx:{}", xxx);
+        Ok(())
+    }
+}
+
+struct Repeat;
+
+impl Map for Repeat {
+    const OP: &'static str = "repeat";
+    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
+        let (inp_d0, inp_d1, inp_d2, inp_d3) = inp_d.dim4();
+        let (dst_d0, dst_d1, dst_d2, dst_d3) = dst_d.dim4();
+
+        assert!(inp_d2 == 1);
+        assert!(inp_d3 == 1);
+        assert!(dst_d2 == 1);
+        assert!(dst_d3 == 1);
+
+        let nc = dst_d0;
+        let nr = dst_d1;
+        let nc0 = inp_d0;
+        let nr0 = inp_d1;
+
+        let ncr = nc / nc0;
+        let nrr = nr / nr0;
+
+        let (dst_s0, dst_s1) = dst_d.stride_2d();
+        let (inp_s0, inp_s1) = inp_d.stride_2d();
+
+        assert!(dst_s0 == 1);
+        assert!(inp_s0 == 1);
+
+        for i in 0..nrr {
+            for j in 0..ncr {
+                for k in 0..nr0 {
+                    vec_cpy(
+                        nc0,
+                        &mut dst[(i * nr0 + k) * (dst_s1) + j * nc0 * (dst_s0)..],
+                        &inp[(k) * (inp_s1)..],
+                    );
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -229,13 +216,28 @@ trait Map2 {
     fn f<T: TensorType>(
         &self,
         inp: &[T],
-        inp_l: &Dim,
+        inp_d: &Dim,
         k: &[T],
-        k_l: &Dim,
+        k_d: &Dim,
         dst: &mut [T],
-    ) -> GResult<()>;
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
 
-    fn f_f16_sf32(
+    fn f_f32(
+        &self,
+        inp: &[f32],
+        inp_l: &Dim,
+        k: &[f32],
+        k_l: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_f16(
         &self,
         inp: &[f32],
         inp_l: &Dim,
@@ -243,7 +245,9 @@ trait Map2 {
         k_l: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
-    ) -> GResult<()>;
+    ) -> GResult<()> {
+        todo!()
+    }
 
     fn map(
         &self,
@@ -256,13 +260,13 @@ trait Map2 {
     ) -> GResult<()> {
         match (dev1, dev2, dst) {
             (CpuDevice::F16(v1), CpuDevice::F16(v2), CpuDevice::F16(d)) => {
-                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut())
+                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
-                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut())
+                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::F16(v2), CpuDevice::F32(d)) => {
-                self.f_f16_sf32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+                self.f_f16(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             _ => {
                 todo!()
@@ -271,74 +275,63 @@ trait Map2 {
     }
 }
 
-pub fn conv_1d_1s(
-    src: &Tensor,
-    kernel: &Tensor,
-    dst: &mut Tensor,
-    padding: usize,
-    stride: usize,
-    dilation: usize,
-    groups: usize,
-) -> GResult<()> {
-    let (c_out, c_in_k, k_size) = kernel.dim3();
-    println!("c_out:{}, c_in_k:{}, k_size:{}", c_out, c_in_k, k_size);
-    let (b_size, c_in, l_in) = src.dim3();
-    println!("b_size:{}, c_in:{}, l_in:{}", b_size, c_in, l_in);
-    if c_in != c_in_k * groups {
-        return Err(GError::Conv1dInvalidArgs {
-            inp_shape: src.shape().to_vec(),
-            k_shape: kernel.shape().to_vec(),
-            padding,
-            stride,
-            msg: "the number of in-channels on the input doesn't match the kernel size",
-        });
-    }
-
-    let params = ParamsConv1D {
-        b_size,
-        l_in,
-        c_out: c_out / groups,
-        c_in: c_in / groups,
-        k_size,
-        padding,
-        stride,
-        dilation,
-    };
-    let dst_dim = dst.dim().clone();
-    match (src.device(), kernel.device(), dst.device_mut()) {
+pub fn conv_1d_1s(src: &Tensor, kernel: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), kernel.device(), dst_device) {
         (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
-            Conv1D(params).map(s, src.dim(), k, kernel.dim(), d, &dst_dim)?;
+            Conv1D.map(s, src.dim(), k, kernel.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
         }
     }
-
     Ok(())
 }
 
-// trait Map {
-//     fn f<T: TensorType>(&self, t: &Tensor) -> LNResult<DTensor<T>>;
+pub fn repeat(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(d)) => {
+            Repeat.map(s, src.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
 
-//     fn out_shape<T: TensorType>(&self, t: &DTensor<T>) -> LNResult<Shape>;
+pub fn add(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(d)) => {
+            Repeat.map(s, src.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
 
-//     fn map(&self, t: Tensor) -> LNResult<GTensor> {
-//         let new_t = match t.as_value_ref().as_tensor_ref() {
-//             GTensor::U8(t1) => GTensor::U8(self.f(t1)?),
-//             GTensor::I8(t1) => GTensor::I8(self.f(t1)?),
-//             GTensor::I16(t1) => GTensor::I16(self.f(t1)?),
-//             GTensor::U16(t1) => GTensor::U16(self.f(t1)?),
-//             GTensor::I32(t1) => GTensor::I32(self.f(t1)?),
-//             GTensor::U32(t1) => GTensor::U32(self.f(t1)?),
-//             GTensor::I64(t1) => GTensor::I64(self.f(t1)?),
-//             GTensor::U64(t1) => GTensor::U64(self.f(t1)?),
-//             GTensor::F16(t1) => GTensor::F16(self.f(t1)?),
-//             GTensor::F32(t1) => GTensor::F32(self.f(t1)?),
-//             GTensor::F64(t1) => GTensor::F64(self.f(t1)?),
-//         };
-//         Ok(new_t)
-//     }
-// }
+trait Map {
+    const OP: &'static str;
+    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()>;
+
+    fn map(&self, dev1: &CpuDevice, d1: &Dim, dst: &mut CpuDevice, d3: &Dim) -> GResult<()> {
+        match (dev1, dst) {
+            (CpuDevice::F16(v1), CpuDevice::F16(d)) => {
+                self.f(v1.as_slice(), d1, d.as_slice_mut(), d3)
+            }
+            (CpuDevice::F32(v1), CpuDevice::F32(d)) => {
+                self.f(v1.as_slice(), d1, d.as_slice_mut(), d3)
+            }
+            _ => {
+                todo!()
+            }
+        }
+    }
+}
 
 // pub trait Distance {}
 
@@ -608,6 +601,20 @@ macro_rules! impl_float_unary_op {
 impl_float_unary_op!(f16);
 impl_float_unary_op!(f32);
 impl_float_unary_op!(f64);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simd_vec_add_f32() {
+        let mut a = [1.0f32, 2.0, 3.0, 4.0, 1.0, 4.0];
+        let mut b = [2.0f32, 3.0, 4.0, 5.0, 2.0, 5.0];
+        let mut c = vec![0.0f32; a.len()];
+        simd_vec_add_f32(&a, &b, &mut c);
+        println!("{:?}", c);
+    }
+}
 
 // impl_binary_op!(Add, add); // +
 // impl_binary_op!(Sub, sub); // -
