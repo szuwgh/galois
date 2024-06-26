@@ -9,9 +9,19 @@ use crate::Dim;
 use crate::Tensor;
 use crate::TensorType;
 use crate::F16;
+use core::cell::OnceCell;
+use core::ops::Mul;
 use half::f16;
+use lazy_static::lazy_static;
 use num_traits::Float;
 use rayon::prelude::*;
+
+const COEF_A: f32 = 0.044715;
+const SQRT_2_OVER_PI: f64 = 0.797_884_560_802_865_4;
+
+lazy_static! {
+    static ref GLOBAL_CPU_DEVICE_CACHE: CpuDeviceCache = CpuDeviceCache::new();
+}
 
 #[inline]
 fn up32(n: i32) -> i32 {
@@ -28,6 +38,39 @@ fn vec_cpy<T: Copy>(n: usize, y: &mut [T], x: &[T]) {
 #[inline]
 fn is_same_shape(a: &[usize], b: &[usize]) -> bool {
     a == b
+}
+
+#[inline]
+fn compute_gelu(v: f32) -> f32 {
+    0.5 * v
+        * (1.0 + f32::tanh((2.0f32 / std::f32::consts::PI).sqrt() * v * (1.0 + 0.044715 * v * v)))
+}
+
+unsafe impl Sync for CpuDeviceCache {}
+
+struct CpuDeviceCache {
+    gelu_cache: OnceCell<Vec<f16>>,
+}
+
+impl CpuDeviceCache {
+    fn new() -> CpuDeviceCache {
+        CpuDeviceCache {
+            gelu_cache: OnceCell::from(Self::init_gelu_cache()),
+        }
+    }
+
+    fn get_gelu_cache(&self) -> &Vec<f16> {
+        self.gelu_cache.get().unwrap()
+    }
+
+    fn init_gelu_cache() -> Vec<f16> {
+        (0..1 << 16)
+            .map(|x| {
+                let v = f16::from_bits(x as u16).to_f32();
+                f16::from_f32(compute_gelu(v))
+            })
+            .collect()
+    }
 }
 
 fn simd_vec_add_f32(inp1: &[f32], inp2: &[f32], dst: &mut [f32]) {
@@ -75,26 +118,78 @@ impl Map2 for Add {
             is_same_shape(inp1_d.shape(), inp2_d.shape())
                 && is_same_shape(inp1_d.shape(), dst_d.shape())
         );
+
+
+ 
+        let ith:usize = 0;
+        let nth: usize = 1;
+    
+        const int n  = nrows(src0);
+        const int nc = src0->ne[0];
+    
+        const size_t nb00 = src0->nb[0];
+        const size_t nb01 = src0->nb[1];
+    
+        const size_t nb10 = src1->nb[0];
+        const size_t nb11 = src1->nb[1];
+    
+        const size_t nb0 = dst->nb[0];
+        const size_t nb1 = dst->nb[1];
+    
+        GGML_ASSERT( nb0 == sizeof(float));
+        GGML_ASSERT(nb00 == sizeof(float));
+    
+        if (nb10 == sizeof(float)) {
+            const int j0 = (n/nth)*ith;
+            const int j1 = ith == nth - 1 ? n : (n/nth)*(ith + 1);
+    
+            for (int j = j0; j < j1; j++) {
+                ggml_vec_add_f32(nc,
+                        (float *) ((char *) dst->data  + j*nb1),
+                        (float *) ((char *) src0->data + j*nb01),
+                        (float *) ((char *) src1->data + j*nb11));
+            }
+        } else {
+            // src1 is not contiguous
+            for (int j = ith; j < n; j += nth) {
+                float * dst_ptr  = (float *) ((char *) dst->data  + j*nb1);
+                float * src0_ptr = (float *) ((char *) src0->data + j*nb01);
+                for (int i = 0; i < nc; i++) {
+                    float * src1_ptr = (float *) ((char *) src1->data + j*nb11 + i*nb10);
+    
+                    dst_ptr[i] = src0_ptr[i] + *src1_ptr;
+                }
+            }
+        }
+
+
         simd_vec_add_f32(inp1, inp2, dst);
         Ok(())
     }
 }
 
-struct Conv1D;
+struct Gelu;
 
-impl Map2 for Conv1D {
-    const OP: &'static str = "conv1d";
-    fn f<T: TensorType>(
-        &self,
-        inp: &[T],
-        inp_d: &Dim,
-        k: &[T],
-        k_d: &Dim,
-        dst: &mut [T],
-        dst_d: &Dim,
-    ) -> GResult<()> {
+impl Map for Gelu {
+    const OP: &'static str = "gelu";
+    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
         todo!()
     }
+
+    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+        assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
+        dst.par_iter_mut().zip(inp.par_iter()).for_each(|(d, a)| {
+            *d = GLOBAL_CPU_DEVICE_CACHE.get_gelu_cache()[f16::from_f32(*a).to_bits() as usize]
+                .to_f32()
+        });
+        Ok(())
+    }
+}
+
+struct Conv1D1S;
+
+impl Map2 for Conv1D1S {
+    const OP: &'static str = "conv1d1s";
 
     fn f_f16(
         &self,
@@ -179,6 +274,99 @@ impl Map2 for Conv1D {
     }
 }
 
+struct Conv1D2S;
+
+impl Map2 for Conv1D2S {
+    const OP: &'static str = "conv1d2s";
+
+    fn f_f16(
+        &self,
+        inp: &[f32],
+        inp_d: &Dim,
+        kernel: &[f16],
+        k_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        println!("conv1d2s");
+        let (ne00, ne01, ne02) = k_d.dim3();
+
+        let (ne10, ne11) = inp_d.dim2();
+        let (nb00, nb01, nb02) = k_d.stride_3d();
+        let (nb10, nb11) = inp_d.stride_2d();
+
+        let nb1 = dst_d.stride()[1];
+
+        let ith = 0;
+        let nth: usize = 1;
+
+        let nk = ne00;
+        let nh: i32 = (nk / 2) as i32;
+
+        let ew0 = up32(ne01 as i32) as usize;
+
+        assert!(ne00 % 2 == 1);
+        assert!(nb00 == 1);
+        assert!(nb10 == 1);
+
+        let mut ker_f16: Vec<f16> = vec![f16::from_f32(0.0); ne02 * ew0 * ne00];
+
+        for i02 in 0..ne02 {
+            for i01 in 0..ne01 {
+                let src_start = i02 * nb02 + i01 * nb01;
+                //  let src_end = src_start + ne00;
+                let src_slice = &kernel[src_start..];
+
+                let dst_start = i02 * ew0 * ne00;
+                // let dst_end = dst_start + ne00 * ew0;
+                let dst_slice = &mut ker_f16[dst_start..];
+                for i00 in 0..ne00 {
+                    dst_slice[i00 * ew0 + i01] = src_slice[i00];
+                }
+            }
+        }
+
+        let mut inp_f16: Vec<f16> =
+            vec![f16::from_f32(0.0); (ne10 + nh as usize) * ew0 * ne11 + ew0];
+        for i11 in 0..ne11 {
+            let src_chunk = &inp[i11 * nb11..];
+
+            for i10 in 0..ne10 {
+                let index = (i10 + nh as usize) * ew0 + i11;
+                inp_f16[index] = f16::from_f32(src_chunk[i10]);
+            }
+        }
+
+        // total rows in dst
+        let nr = ne02;
+
+        // rows per thread
+        let dr = (nr + nth - 1) / nth;
+
+        // row range for this thread
+        let ir0 = dr * ith;
+        let ir1 = std::cmp::min(ir0 + dr, nr);
+
+        for i1 in ir0..ir1 {
+            let dst_data = &mut dst[i1 * nb1..];
+
+            for i0 in (0..ne10).step_by(2) {
+                dst_data[i0 / 2] = 0.0;
+                for k in -nh..=nh {
+                    let mut v = 0.0f32;
+                    let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+                    let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+                    let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+                    let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+                    unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+                    dst_data[i0 / 2] += v;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 struct Repeat;
 
 impl Map for Repeat {
@@ -219,6 +407,10 @@ impl Map for Repeat {
         }
         Ok(())
     }
+
+    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+        self.f(inp, inp_d, dst, dst_d)
+    }
 }
 
 trait Map2 {
@@ -238,21 +430,21 @@ trait Map2 {
     fn f_f32(
         &self,
         inp: &[f32],
-        inp_l: &Dim,
+        inp_d: &Dim,
         k: &[f32],
-        k_l: &Dim,
+        k_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
-        todo!()
+        self.f(inp, inp_d, k, k_d, dst, dst_d)
     }
 
     fn f_f16(
         &self,
         inp: &[f32],
-        inp_l: &Dim,
+        inp_d: &Dim,
         k: &[f16],
-        k_l: &Dim,
+        k_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
@@ -289,7 +481,20 @@ pub fn galois_conv_1d_1s(src: &Tensor, kernel: &Tensor, dst: &mut Tensor) -> GRe
     let (dst_device, dst_dim) = dst.device_dim();
     match (src.device(), kernel.device(), dst_device) {
         (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
-            Conv1D.map(s, src.dim(), k, kernel.dim(), d, dst_dim)?;
+            Conv1D1S.map(s, src.dim(), k, kernel.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
+pub fn galois_conv_1d_2s(src: &Tensor, kernel: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), kernel.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
+            Conv1D2S.map(s, src.dim(), k, kernel.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -324,9 +529,24 @@ pub fn galois_add(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
+pub fn galois_gelu(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(d)) => {
+            Gelu.map(s, src.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
 trait Map {
     const OP: &'static str;
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()>;
+
+    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()>;
 
     fn map(&self, dev1: &CpuDevice, d1: &Dim, dst: &mut CpuDevice, d3: &Dim) -> GResult<()> {
         match (dev1, dst) {
@@ -334,7 +554,7 @@ trait Map {
                 self.f(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::F32(d)) => {
-                self.f(v1.as_slice(), d1, d.as_slice_mut(), d3)
+                self.f_f32(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
             _ => {
                 todo!()
@@ -618,8 +838,8 @@ mod tests {
 
     #[test]
     fn test_simd_vec_add_f32() {
-        let mut a = [1.0f32, 2.0, 3.0, 4.0, 1.0, 4.0];
-        let mut b = [2.0f32, 3.0, 4.0, 5.0, 2.0, 5.0];
+        let mut a = [1.0f32, 2.0, 3.0];
+        let mut b = [2.0f32, 3.0, 4.0];
         let mut c = vec![0.0f32; a.len()];
         simd_vec_add_f32(&a, &b, &mut c);
         println!("{:?}", c);

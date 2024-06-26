@@ -20,7 +20,7 @@ impl Axis {
 }
 
 #[inline(always)]
-pub fn stride_offset(n: usize, stride: usize) -> isize {
+pub fn compute_stride_offset(n: usize, stride: usize) -> isize {
     (n * stride) as isize
 }
 
@@ -66,6 +66,10 @@ impl Dim {
 
     pub fn dim2(&self) -> (usize, usize) {
         self.s.dims2()
+    }
+
+    pub fn dim1(&self) -> usize {
+        self.s.dims1()
     }
 
     pub fn n_dims(&self) -> usize {
@@ -223,6 +227,10 @@ impl Shape {
         dims2(&self.0)
     }
 
+    pub fn dims1(&self) -> usize {
+        dims1(&self.0)
+    }
+
     pub fn elem_count(&self) -> usize {
         self.0.iter().product()
     }
@@ -280,21 +288,26 @@ impl Shape {
     }
 
     // [a, b, c] => strides [b * c, c, 1]
-    pub fn strides(&self, n_dims: usize) -> [usize; 4] {
+    pub fn strides(&self) -> [usize; 4] {
         let mut x: [usize; 4] = [0usize; 4];
         x[0] = 1;
         for i in 1..MAX_DIM {
             x[i] = x[i - 1] * self.0[i - 1];
         }
+        x
+    }
+
+    pub fn old_strides(&self, n_dims: usize) -> [usize; 4] {
+        let mut x: [usize; 4] = [0usize; 4];
         //vec![0; self.dim()];
-        // let s = self.dims(n_dims).iter().rev();
-        // let mut prod = 1;
-        // let mut temp = 1;
-        // for (m, dim) in x[..n_dims].iter_mut().rev().zip(s) {
-        //     prod *= temp;
-        //     *m = prod;
-        //     temp = *dim;
-        // }
+        let s = self.dims(n_dims).iter().rev();
+        let mut prod = 1;
+        let mut temp = 1;
+        for (m, dim) in x[..n_dims].iter_mut().rev().zip(s) {
+            prod *= temp;
+            *m = prod;
+            temp = *dim;
+        }
         x
     }
 
@@ -336,7 +349,7 @@ impl Shape {
     pub(crate) fn stride_offset(index: &[usize], strides: &[usize]) -> isize {
         let mut offset = 0;
         for (&i, &s) in index.iter().zip(strides.iter()) {
-            offset += stride_offset(i, s);
+            offset += compute_stride_offset(i, s);
         }
         offset
     }
@@ -447,11 +460,15 @@ mod tests {
 
     #[test]
     fn test_shape_iter() {
-        let d = Shape::from_vec(vec![2, 2]);
-        let mut i = d.iter(2);
-        let strides = &d.strides(2);
+        let d = Shape::from_vec(vec![3, 2, 2]);
+        let mut i = d.iter(3);
+        let strides = &d.strides();
         println!("strides:{:?}", strides);
-        while let Some(x) = i.next(2) {
+        println!("old strides:{:?}", d.old_strides(3));
+
+        // let ggml_strides = &d.ggml_strides();
+        // println!("strides:{:?}", ggml_strides);
+        while let Some(x) = i.next(3) {
             let offset = Shape::stride_offset(x.dims(3), strides);
             println!("{:?},{}", x, offset);
         }

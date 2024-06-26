@@ -44,9 +44,6 @@ pub enum DType {
 }
 
 pub const GS_TYPE_SIZE: [usize; DType::TypeCount as usize] = [
-    // std::mem::size_of::<i8>(),
-    // std::mem::size_of::<i16>(),
-    // std::mem::size_of::<i32>(),
     std::mem::size_of::<f16>(),
     std::mem::size_of::<f32>(),
     std::mem::size_of::<f64>(),
@@ -548,6 +545,13 @@ impl<P: TensorType> RawData<P> {
         };
     }
 
+    fn as_bytes(&self) -> &[u8] {
+        return match self {
+            RawData::Own(v) => v.as_bytes(),
+            RawData::Ref(v) => v.as_bytes(),
+        };
+    }
+
     fn as_slice(&self) -> &[P] {
         return match self {
             RawData::Own(v) => v.as_slice(),
@@ -582,6 +586,15 @@ impl<P: TensorType> RawRef<P> {
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.ptr.as_ptr() as *mut u8,
+                self.len * std::mem::size_of::<P>(),
+            )
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.ptr.as_ptr() as *const u8,
                 self.len * std::mem::size_of::<P>(),
             )
         }
@@ -714,6 +727,15 @@ impl<P: TensorType> RawPtr<P> {
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.ptr.as_ptr() as *mut u8,
+                self.len * std::mem::size_of::<P>(),
+            )
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.ptr.as_ptr() as *const u8,
                 self.len * std::mem::size_of::<P>(),
             )
         }
@@ -862,6 +884,14 @@ impl CpuDevice {
         };
     }
 
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        return match self {
+            CpuDevice::F16(v) => v.as_bytes(),
+            CpuDevice::F32(v) => v.as_bytes(),
+            CpuDevice::F64(v) => v.as_bytes(),
+        };
+    }
+
     pub(crate) fn as_ref(&self) -> CpuDevice {
         return match self {
             CpuDevice::F16(v) => CpuDevice::F16(v.as_ref()),
@@ -952,6 +982,15 @@ impl Device {
     pub(crate) fn as_bytes_mut(&self) -> &mut [u8] {
         return match self {
             Device::Cpu(v) => v.as_bytes_mut(),
+            Device::Gpu() => {
+                todo!()
+            }
+        };
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        return match self {
+            Device::Cpu(v) => v.as_bytes(),
             Device::Gpu() => {
                 todo!()
             }
@@ -1094,7 +1133,7 @@ impl Tensor {
     }
 
     fn from_device(data: Device, n_dims: usize, s: Shape, dtype: DType) -> Self {
-        let stride = s.strides(n_dims);
+        let stride = s.strides();
         Self {
             dtype: dtype,
             data: data,
@@ -1193,6 +1232,10 @@ impl Tensor {
         self.device().as_bytes_mut()
     }
 
+    pub fn as_bytes(&self) -> &[u8] {
+        self.device().as_bytes()
+    }
+
     pub unsafe fn as_slice_mut<T>(&self) -> &mut [T] {
         let bytes = self.as_bytes_mut();
         assert!(bytes.as_ptr() as usize % std::mem::align_of::<f32>() == 0);
@@ -1215,6 +1258,10 @@ impl Tensor {
         &self.dim.shape()
     }
 
+    pub fn dim1(&self) -> usize {
+        self.dim.dim1()
+    }
+
     pub fn dim3(&self) -> (usize, usize, usize) {
         self.dim.dim3()
     }
@@ -1233,6 +1280,10 @@ impl Tensor {
 
     pub fn dtype(&self) -> DType {
         self.dtype
+    }
+
+    pub fn dtype_size(&self) -> usize {
+        GS_TYPE_SIZE[self.dtype as usize]
     }
 
     pub fn single_dim(&self, dim: usize) -> GResult<usize> {
@@ -1424,29 +1475,29 @@ impl Tensor {
     //     }
     // }
 
-    pub fn reshape(&self, s: Shape) -> Tensor {
-        if self.dim.elem_count() != s.elem_count() {
-            panic!(
-                "ndarray: incompatible shapes in reshape, attempted from: {:?}, to: {:?}",
-                self.dim.shape(),
-                s
-            )
-        }
-        let n_dims = self.dim().n_dims();
-        if self.dim().is_contiguous() {
-            let stride = s.strides(n_dims);
-            Self {
-                dtype: self.dtype(),
-                data: self.data.as_ref(),
-                dim: Dim { n_dims, s, stride },
-            }
-        } else {
-            let mut new_tensor = Self::zeros(n_dims, s, self.dtype());
-            self.device()
-                .copy_strided_src(&mut new_tensor.device_mut(), 0, self.dim());
-            new_tensor
-        }
-    }
+    // pub fn reshape(&self, s: Shape) -> Tensor {
+    //     if self.dim.elem_count() != s.elem_count() {
+    //         panic!(
+    //             "ndarray: incompatible shapes in reshape, attempted from: {:?}, to: {:?}",
+    //             self.dim.shape(),
+    //             s
+    //         )
+    //     }
+    //     let n_dims = self.dim().n_dims();
+    //     if self.dim().is_contiguous() {
+    //         let stride = s.strides();
+    //         Self {
+    //             dtype: self.dtype(),
+    //             data: self.data.as_ref(),
+    //             dim: Dim { n_dims, s, stride },
+    //         }
+    //     } else {
+    //         let mut new_tensor = Self::zeros(n_dims, s, self.dtype());
+    //         self.device()
+    //             .copy_strided_src(&mut new_tensor.device_mut(), 0, self.dim());
+    //         new_tensor
+    //     }
+    // }
 
     fn into_transpose(mut self, d1: usize, d2: usize) -> GResult<Tensor> {
         if d1 > self.size() {
@@ -1898,6 +1949,8 @@ mod tests {
         for i in m.iter() {
             println!("v:{:?}", i);
         }
+        println!("shape:{:?}", m.dim().shape());
+        println!("stride:{:?}", m.dim().stride());
         // //   let v = m.as_slice();
         // let s = &m.dim.stride;
         // {
@@ -1948,22 +2001,22 @@ mod tests {
 
     #[test]
     fn test_reshape() {
-        let t1 = cube(&[
-            [
-                [1.0, 2.0, 1.0, 2.0],
-                [3.0, 4.0, 3.0, 4.0],
-                [3.0, 4.0, 3.0, 4.0],
-            ],
-            [
-                [5.0, 6.0, 5.0, 6.0],
-                [7.0, 8.0, 7.0, 8.0],
-                [7.0, 8.0, 7.0, 8.0],
-            ],
-        ]);
-        println!("t1:{:?}", t1.shape());
+        // let t1 = cube(&[
+        //     [
+        //         [1.0, 2.0, 1.0, 2.0],
+        //         [3.0, 4.0, 3.0, 4.0],
+        //         [3.0, 4.0, 3.0, 4.0],
+        //     ],
+        //     [
+        //         [5.0, 6.0, 5.0, 6.0],
+        //         [7.0, 8.0, 7.0, 8.0],
+        //         [7.0, 8.0, 7.0, 8.0],
+        //     ],
+        // ]);
+        // println!("t1:{:?}", t1.shape());
 
-        let t2 = t1.reshape(Shape::from_array([2, 3, 2, 2]));
-        println!("t2:{:?}", t2);
+        // let t2 = t1.reshape(Shape::from_array([2, 3, 2, 2]));
+        // println!("t2:{:?}", t2);
     }
 
     #[test]
