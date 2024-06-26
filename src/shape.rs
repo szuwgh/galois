@@ -76,6 +76,11 @@ impl Dim {
         self.n_dims
     }
 
+    pub fn nrows(&self) -> usize {
+        let (_, d1, d2, d3) = self.dim4();
+        d1 * d2 * d3
+    }
+
     pub(crate) fn elem_count(&self) -> usize {
         self.s.elem_count()
     }

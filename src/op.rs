@@ -10,7 +10,6 @@ use crate::Tensor;
 use crate::TensorType;
 use crate::F16;
 use core::cell::OnceCell;
-use core::ops::Mul;
 use half::f16;
 use lazy_static::lazy_static;
 use num_traits::Float;
@@ -74,9 +73,9 @@ impl CpuDeviceCache {
 }
 
 fn simd_vec_add_f32(inp1: &[f32], inp2: &[f32], dst: &mut [f32]) {
-    dst.chunks_exact_mut(4)
-        .zip(inp1.chunks_exact(4).cycle())
-        .zip(inp2.chunks_exact(4).cycle())
+    dst.par_chunks_exact_mut(4)
+        .zip(inp1.par_chunks_exact(4))
+        .zip(inp2.par_chunks_exact(4))
         .for_each(|((d, ia), ib)| {
             let va = std::simd::f32x4::from_slice(ia);
             let vb = std::simd::f32x4::from_slice(ib);
@@ -119,51 +118,44 @@ impl Map2 for Add {
                 && is_same_shape(inp1_d.shape(), dst_d.shape())
         );
 
-
- 
-        let ith:usize = 0;
+        let ith: usize = 0;
         let nth: usize = 1;
-    
-        const int n  = nrows(src0);
-        const int nc = src0->ne[0];
-    
-        const size_t nb00 = src0->nb[0];
-        const size_t nb01 = src0->nb[1];
-    
-        const size_t nb10 = src1->nb[0];
-        const size_t nb11 = src1->nb[1];
-    
-        const size_t nb0 = dst->nb[0];
-        const size_t nb1 = dst->nb[1];
-    
-        GGML_ASSERT( nb0 == sizeof(float));
-        GGML_ASSERT(nb00 == sizeof(float));
-    
-        if (nb10 == sizeof(float)) {
-            const int j0 = (n/nth)*ith;
-            const int j1 = ith == nth - 1 ? n : (n/nth)*(ith + 1);
-    
-            for (int j = j0; j < j1; j++) {
-                ggml_vec_add_f32(nc,
-                        (float *) ((char *) dst->data  + j*nb1),
-                        (float *) ((char *) src0->data + j*nb01),
-                        (float *) ((char *) src1->data + j*nb11));
-            }
+
+        let n = inp1_d.nrows();
+        let nc = inp1_d.dim1();
+
+        let (nb00, nb01) = inp1_d.stride_2d();
+
+        let (nb10, nb11) = inp2_d.stride_2d();
+
+        let (nb0, nb1) = dst_d.stride_2d();
+
+        assert!(nb0 == 1);
+        assert!(nb00 == 1);
+
+        if nb10 == 1 {
+            println!("连续");
+            simd_vec_add_f32(inp1, inp2, dst);
         } else {
-            // src1 is not contiguous
-            for (int j = ith; j < n; j += nth) {
-                float * dst_ptr  = (float *) ((char *) dst->data  + j*nb1);
-                float * src0_ptr = (float *) ((char *) src0->data + j*nb01);
-                for (int i = 0; i < nc; i++) {
-                    float * src1_ptr = (float *) ((char *) src1->data + j*nb11 + i*nb10);
-    
-                    dst_ptr[i] = src0_ptr[i] + *src1_ptr;
-                }
-            }
+            println!("不连续");
+            // for j in 0..n {
+            //     let dst_ptr = &mut dst[j * nb1..];
+            //     let src0_ptr = &inp1[j * nb01..];
+            //     for i in 0..nc {
+            //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
+            //     }
+            // }
+
+            dst.par_chunks_mut(nb1)
+                .enumerate()
+                .for_each(|(j, dst_ptr)| {
+                    let src0_ptr = &inp1[j * nb01..];
+                    for i in 0..nc {
+                        dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
+                    }
+                });
         }
 
-
-        simd_vec_add_f32(inp1, inp2, dst);
         Ok(())
     }
 }
@@ -248,28 +240,63 @@ impl Map2 for Conv1D1S {
         let nr = ne02;
 
         // rows per thread
-        let dr = (nr + nth - 1) / nth;
+        let dr = nr; //(nr + nth - 1) / nth;
 
         // row range for this thread
-        let ir0 = dr * ith;
+        let ir0 = 0; //dr * ith;
         let ir1 = std::cmp::min(ir0 + dr, nr);
 
-        for i1 in ir0..ir1 {
-            let dst_data = &mut dst[i1 * nb1..];
+        // for i1 in ir0..ir1 {
+        //     let dst_data = &mut dst[i1 * nb1..];
 
-            for i0 in 0..ne10 {
-                dst_data[i0] = 0.0;
-                for k in -nh..=nh {
-                    let mut v = 0.0f32;
-                    let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
-                    let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-                    let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
-                    let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-                    unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
-                    dst_data[i0] += v;
+        //     for i0 in 0..ne10 {
+        //         dst_data[i0] = 0.0;
+        //         for k in -nh..=nh {
+        //             let mut v = 0.0f32;
+        //             let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+        //             let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+        //             let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+        //             let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+        //             unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+        //             dst_data[i0] += v;
+        //         }
+        //     }
+        // }
+        dst.par_chunks_mut(nb1)
+            .enumerate()
+            .for_each(|(i1, dst_data)| {
+                for i0 in 0..ne10 {
+                    dst_data[i0] = 0.0;
+                    for k in -nh..=nh {
+                        let mut v = 0.0f32;
+                        let wdata1_idx =
+                            ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+                        let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+                        let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+                        let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+                        unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+                        dst_data[i0] += v;
+                    }
                 }
-            }
-        }
+            });
+
+        // (0..nr).into_par_iter().for_each(|i1| {
+        //     let dst_data = &mut dst[i1 * nb1..];
+
+        //     for i0 in 0..ne10 {
+        //         dst_data[i0] = 0.0;
+        //         for k in -nh..=nh {
+        //             let mut v = 0.0f32;
+        //             let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+        //             let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+        //             let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+        //             let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+        //             unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+        //             dst_data[i0] += v;
+        //         }
+        //     }
+        // });
+
         Ok(())
     }
 }
@@ -338,31 +365,49 @@ impl Map2 for Conv1D2S {
         }
 
         // total rows in dst
-        let nr = ne02;
+        // let nr = ne02;
 
-        // rows per thread
-        let dr = (nr + nth - 1) / nth;
+        // // rows per thread
+        // let dr = (nr + nth - 1) / nth;
 
-        // row range for this thread
-        let ir0 = dr * ith;
-        let ir1 = std::cmp::min(ir0 + dr, nr);
+        // // row range for this thread
+        // let ir0 = dr * ith;
+        // let ir1 = std::cmp::min(ir0 + dr, nr);
 
-        for i1 in ir0..ir1 {
-            let dst_data = &mut dst[i1 * nb1..];
-
-            for i0 in (0..ne10).step_by(2) {
-                dst_data[i0 / 2] = 0.0;
-                for k in -nh..=nh {
-                    let mut v = 0.0f32;
-                    let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
-                    let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-                    let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
-                    let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-                    unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
-                    dst_data[i0 / 2] += v;
+        dst.par_chunks_mut(nb1)
+            .enumerate()
+            .for_each(|(i1, dst_data)| {
+                for i0 in (0..ne10).step_by(2) {
+                    dst_data[i0 / 2] = 0.0;
+                    for k in -nh..=nh {
+                        let mut v = 0.0f32;
+                        let wdata1_idx =
+                            ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+                        let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+                        let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+                        let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+                        unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+                        dst_data[i0 / 2] += v;
+                    }
                 }
-            }
-        }
+            });
+
+        // for i1 in ir0..ir1 {
+        //     let dst_data = &mut dst[i1 * nb1..];
+
+        //     for i0 in (0..ne10).step_by(2) {
+        //         dst_data[i0 / 2] = 0.0;
+        //         for k in -nh..=nh {
+        //             let mut v = 0.0f32;
+        //             let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+        //             let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+        //             let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+        //             let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+        //             unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+        //             dst_data[i0 / 2] += v;
+        //         }
+        //     }
+        // }
         Ok(())
     }
 }
@@ -838,8 +883,8 @@ mod tests {
 
     #[test]
     fn test_simd_vec_add_f32() {
-        let mut a = [1.0f32, 2.0, 3.0];
-        let mut b = [2.0f32, 3.0, 4.0];
+        let mut a = [1.0f32, 2.0, 3.0, 1.0f32, 2.0, 3.0];
+        let mut b = [2.0f32, 3.0, 4.0, 1.0f32, 2.0, 3.0];
         let mut c = vec![0.0f32; a.len()];
         simd_vec_add_f32(&a, &b, &mut c);
         println!("{:?}", c);

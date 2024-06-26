@@ -1153,6 +1153,10 @@ impl Tensor {
         &mut self.data
     }
 
+    fn nrows(&self) -> usize {
+        let (_, d1, d2, d3) = self.dim4();
+        d1 * d2 * d3
+    }
     // fn from_device<A>(data: RawPtr<A>, s: Shape) -> Self {
     //     let stride = s.strides();
     //     Self {
@@ -1264,6 +1268,10 @@ impl Tensor {
 
     pub fn dim3(&self) -> (usize, usize, usize) {
         self.dim.dim3()
+    }
+
+    pub fn dim4(&self) -> (usize, usize, usize, usize) {
+        self.dim.dim4()
     }
 
     pub fn n_dims(&self) -> usize {
