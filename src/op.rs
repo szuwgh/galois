@@ -134,10 +134,8 @@ impl Map2 for Add {
         assert!(nb00 == 1);
 
         if nb10 == 1 {
-            println!("连续");
             simd_vec_add_f32(inp1, inp2, dst);
         } else {
-            println!("不连续");
             // for j in 0..n {
             //     let dst_ptr = &mut dst[j * nb1..];
             //     let src0_ptr = &inp1[j * nb01..];

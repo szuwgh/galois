@@ -1,6 +1,6 @@
 use super::error::{GError, GResult, ShapeErrorKind};
 
-const MAX_DIM: usize = 4;
+pub(crate) const MAX_DIM: usize = 4;
 
 pub(crate) fn zip<I, J>(i: I, j: J) -> std::iter::Zip<I::IntoIter, J::IntoIter>
 where
@@ -34,6 +34,10 @@ pub struct Dim {
 impl Dim {
     pub fn shape(&self) -> &[usize] {
         &self.s.as_slice()[..self.n_dims]
+    }
+
+    pub fn ret_stride(&mut self, stride: Layout) {
+        self.stride = stride
     }
 
     pub fn shape_mut(&mut self) -> &mut [usize] {

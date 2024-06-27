@@ -25,6 +25,7 @@ use shape::ShapeIter;
 use std::fmt;
 use std::mem::forget;
 mod tensor;
+use crate::shape::Layout;
 use half::f16;
 use num_traits::ToPrimitive;
 
@@ -1174,6 +1175,10 @@ impl Tensor {
     //     Tensor::from_raw(data, s)
     // }
 
+    pub fn ret_stride(&mut self, stride: Layout) {
+        self.dim.ret_stride(stride)
+    }
+
     pub fn view(&self) -> Tensor {
         Tensor {
             dtype: self.dtype.clone(),
@@ -1506,6 +1511,29 @@ impl Tensor {
     //         new_tensor
     //     }
     // }
+
+    pub fn transpose(&mut self, d1: usize, d2: usize) -> GResult<Tensor> {
+        if d1 > self.size() {
+            return Err(GError::DimOutOfRange {
+                shape: self.dim().s.clone(),
+                dim: d1,
+                op: "transpose",
+            });
+        }
+        if d2 > self.size() {
+            return Err(GError::DimOutOfRange {
+                shape: self.dim().s.clone(),
+                dim: d2,
+                op: "transpose",
+            });
+        }
+        let new_dim = self.dim.transpose(d1, d2)?;
+        Ok(Tensor {
+            dtype: self.dtype(),
+            data: self.data.as_ref(),
+            dim: new_dim,
+        })
+    }
 
     fn into_transpose(mut self, d1: usize, d2: usize) -> GResult<Tensor> {
         if d1 > self.size() {
