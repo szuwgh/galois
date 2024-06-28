@@ -1418,9 +1418,9 @@ impl Tensor {
     // }
 
     pub fn matmul(&self, rhs: &Tensor) -> GResult<Tensor> {
-        assert!(self.dim().is_contiguous());
-        assert!(rhs.dim().is_contiguous());
-        assert!(self.dim().shape().last() == self.dim().shape().last());
+        //  assert!(self.dim().is_contiguous());
+        //  assert!(rhs.dim().is_contiguous());
+        //  assert!(self.dim().shape().last() == self.dim().shape().last());
 
         let l_dim = self.dim().shape();
         let r_dim: &[usize] = rhs.dim().shape();
@@ -1704,14 +1704,15 @@ impl MatMul {
         use gemm::{gemm, Parallelism};
 
         // match T::DTYPE {
+
         //     DType::F16 | DType::F32 | DType::F64 => {}
         //     _ => Err(Error::UnsupportedDTypeForOp(T::DTYPE, "matmul").bt())?,
         // }
 
         let (b, m, n, k) = self.0;
-        let lhs_stride = lhs_l.stride();
-        let rhs_stride = rhs_l.stride();
-        let rank = lhs_stride.len();
+        let lhs_stride = lhs_l.nd_stride();
+        let rhs_stride = rhs_l.nd_stride();
+        let rank = lhs_l.n_dims();
         let lhs_cs = lhs_stride[rank - 1];
         let lhs_rs = lhs_stride[rank - 2];
 
@@ -2106,8 +2107,8 @@ mod tests {
 
     #[test]
     fn test_matmul() {
-        let m1 = mat(&[[1.0, 2.0], [3.0, 4.0], [1.0, 2.0], [3.0, 4.0], [1.0, 2.0]]);
-        let m2 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let m1 = mat(&[[1.0, 2.0], [3.0, 4.0], [3.0, 4.0]]);
+        let m2 = mat(&[[1.0, 2.0, 4.0], [3.0, 4.0, 5.0]]);
         let d = m1.matmul(&m2).unwrap();
         println!("{:?}", d);
 

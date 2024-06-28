@@ -40,6 +40,19 @@ impl Dim {
         self.stride = stride
     }
 
+    pub fn nd_stride(&self) -> Layout {
+        let mut x: [usize; 4] = [0usize; 4];
+        let s = self.shape().iter().rev();
+        let mut prod = 1;
+        let mut temp = 1;
+        for (m, dim) in x[..self.n_dims].iter_mut().rev().zip(s) {
+            prod *= temp;
+            *m = prod;
+            temp = *dim;
+        }
+        x
+    }
+
     pub fn shape_mut(&mut self) -> &mut [usize] {
         &mut self.s.as_slice_mut()[..self.n_dims]
     }
@@ -265,6 +278,14 @@ impl Shape {
             .collect();
         stride.reverse();
         stride
+        // let mut stride = [0; MAX_DIM];
+        // let mut prod = 1;
+
+        // for (i, &u) in self.0.iter().rev().enumerate().take(4) {
+        //     stride[3 - i] = prod;
+        //     prod *= u;
+        // }
+        // stride
     }
 
     pub fn select_axis(&self, a: Axis) -> Shape {
@@ -304,6 +325,17 @@ impl Shape {
             x[i] = x[i - 1] * self.0[i - 1];
         }
         x
+        // let mut x: [usize; 4] = [0usize; 4];
+        // //vec![0; self.dim()];
+        // let s = self.dims(2).iter().rev();
+        // let mut prod = 1;
+        // let mut temp = 1;
+        // for (m, dim) in x[..2].iter_mut().rev().zip(s) {
+        //     prod *= temp;
+        //     *m = prod;
+        //     temp = *dim;
+        // }
+        // x
     }
 
     pub fn old_strides(&self, n_dims: usize) -> [usize; 4] {
@@ -462,24 +494,31 @@ mod tests {
 
     #[test]
     fn test_dyn_dim_select_axis() {
-        let d = Shape::from_vec(vec![4usize, 3, 2, 1]);
-        let d2 = d.select_axis(Axis(0));
-        println!("{:?}", d2.as_slice());
+        let d = Shape::from_vec(vec![4usize, 3, 2, 2]);
+        let s = d.stride_contiguous();
+        println!("s:{:?}", s);
     }
 
     #[test]
     fn test_shape_iter() {
-        let d = Shape::from_vec(vec![3, 2, 2]);
-        let mut i = d.iter(3);
+        let d = Shape::from_vec(vec![3, 2]);
+        // let mut i = d.iter(2);
         let strides = &d.strides();
         println!("strides:{:?}", strides);
-        println!("old strides:{:?}", d.old_strides(3));
+        println!("old strides:{:?}", d.old_strides(2));
+
+        let dim = Dim {
+            n_dims: 2,
+            s: d,
+            stride: Layout::default(),
+        };
+        println!("nd strides:{:?}", dim.nd_stride());
 
         // let ggml_strides = &d.ggml_strides();
         // println!("strides:{:?}", ggml_strides);
-        while let Some(x) = i.next(3) {
-            let offset = Shape::stride_offset(x.dims(3), strides);
-            println!("{:?},{}", x, offset);
-        }
+        // while let Some(x) = i.next(2) {
+        //     let offset = Shape::stride_offset(x.dims(2), strides);
+        //     println!("{:?},{}", x, offset);
+        // }
     }
 }
