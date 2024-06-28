@@ -13,6 +13,7 @@ use core::arch::x86::*;
 use core::arch::x86_64::*;
 mod zip;
 extern crate alloc;
+use crate::shape::MAX_DIM;
 
 use crate::error::{GError, GResult};
 use crate::shape::Dim;
@@ -807,7 +808,7 @@ pub enum TensorItem<'a> {
 pub struct TensorIter<'a> {
     n_dims: usize,
     device: &'a Device,
-    strides: &'a [usize],
+    strides: [usize; MAX_DIM],
     shape_iter: ShapeIter<'a>,
 }
 
@@ -816,7 +817,7 @@ impl<'a> Iterator for TensorIter<'a> {
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let index = self.shape_iter.next(self.n_dims)?;
-        let offset = Shape::stride_offset(index.dims(self.n_dims), self.strides);
+        let offset = Shape::stride_offset(index.dims(self.n_dims), &self.strides[..self.n_dims]);
         match self.device {
             Device::Cpu(cpu) => match cpu {
                 CpuDevice::F16(v) => {
@@ -1247,7 +1248,7 @@ impl Tensor {
 
     pub unsafe fn as_slice_mut<T>(&self) -> &mut [T] {
         let bytes = self.as_bytes_mut();
-        assert!(bytes.as_ptr() as usize % std::mem::align_of::<f32>() == 0);
+        assert!(bytes.as_ptr() as usize % std::mem::align_of::<T>() == 0);
         let len = bytes.len() / std::mem::size_of::<T>();
         std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, len)
     }
@@ -1676,7 +1677,7 @@ impl Tensor {
             n_dims: self.dim().n_dims(),
             device: &self.data,
             shape_iter: self.dim.s.iter(self.dim().n_dims()),
-            strides: self.dim.stride(),
+            strides: self.dim.nd_stride(),
         }
     }
 
@@ -2107,10 +2108,11 @@ mod tests {
 
     #[test]
     fn test_matmul() {
-        let m1 = mat(&[[1.0, 2.0], [3.0, 4.0], [3.0, 4.0]]);
-        let m2 = mat(&[[1.0, 2.0, 4.0], [3.0, 4.0, 5.0]]);
+        let m1 = mat(&[[1.0f32, 2.0], [3.0f32, 4.0], [3.0f32, 4.0]]);
+        let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
         let d = m1.matmul(&m2).unwrap();
-        println!("{:?}", d);
+        let v = unsafe { d.as_slice_mut<f32>() };
+        println!("{:?}", v);
 
         // let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
         // let m2 = mat(&[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]);
