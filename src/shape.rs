@@ -265,27 +265,27 @@ impl Shape {
         }
     }
 
-    pub(crate) fn stride_contiguous(&self) -> Vec<usize> {
-        let mut stride: Vec<_> = self
-            .0
-            .iter()
-            .rev()
-            .scan(1, |prod, u| {
-                let prod_pre_mult = *prod;
-                *prod *= u;
-                Some(prod_pre_mult)
-            })
-            .collect();
-        stride.reverse();
-        stride
-        // let mut stride = [0; MAX_DIM];
-        // let mut prod = 1;
-
-        // for (i, &u) in self.0.iter().rev().enumerate().take(4) {
-        //     stride[3 - i] = prod;
-        //     prod *= u;
-        // }
+    pub(crate) fn stride_contiguous(&self) -> Layout {
+        // let mut stride: Vec<_> = self
+        //     .0
+        //     .iter()
+        //     .rev()
+        //     .scan(1, |prod, u| {
+        //         let prod_pre_mult = *prod;
+        //         *prod *= u;
+        //         Some(prod_pre_mult)
+        //     })
+        //     .collect();
+        // stride.reverse();
         // stride
+        let mut stride = [0; MAX_DIM];
+        let mut prod = 1;
+
+        for (i, &u) in self.0.iter().rev().enumerate().take(4) {
+            stride[3 - i] = prod;
+            prod *= u;
+        }
+        stride
     }
 
     pub fn select_axis(&self, a: Axis) -> Shape {

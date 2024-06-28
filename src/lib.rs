@@ -1628,11 +1628,12 @@ impl Tensor {
     }
 
     fn axis_index(&self, a: Axis, index: usize) -> Tensor {
+        let nd_stride = self.dim.nd_stride();
         let axis = a.index();
-        let stride = self.dim.stride()[axis];
+        let stride = nd_stride[axis];
         let offset = index * stride;
         let axis_dim = self.dim.s.select_axis(a);
-        let s = shape::select_axis(&self.dim.stride(), a);
+        let s = shape::select_axis(&nd_stride, a);
         // let raw_ref = RawRef {
         //     ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
         //     len: self.data.len() - offset,
@@ -2111,7 +2112,8 @@ mod tests {
         let m1 = mat(&[[1.0f32, 2.0], [3.0f32, 4.0], [3.0f32, 4.0]]);
         let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
         let d = m1.matmul(&m2).unwrap();
-        let v = unsafe { d.as_slice_mut<f32>() };
+        println!("{:?}", d);
+        let v = unsafe { d.as_slice_mut::<f32>() };
         println!("{:?}", v);
 
         // let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
