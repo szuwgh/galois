@@ -1,3 +1,4 @@
+use core::time;
 use std::ops::Neg;
 
 use crate::error::GResult;
@@ -322,7 +323,10 @@ impl Map2 for Conv1D2S {
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
-        println!("conv1d2s");
+        let time1 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
         let (ne00, ne01, ne02) = k_d.dim3();
 
         let (ne10, ne11) = inp_d.dim2();
@@ -372,16 +376,6 @@ impl Map2 for Conv1D2S {
             }
         }
 
-        // total rows in dst
-        // let nr = ne02;
-
-        // // rows per thread
-        // let dr = (nr + nth - 1) / nth;
-
-        // // row range for this thread
-        // let ir0 = dr * ith;
-        // let ir1 = std::cmp::min(ir0 + dr, nr);
-
         dst.par_chunks_mut(nb1)
             .enumerate()
             .for_each(|(i1, dst_data)| {
@@ -400,6 +394,16 @@ impl Map2 for Conv1D2S {
                 }
             });
 
+        // total rows in dst
+        // let nr = ne02;
+
+        // // // rows per thread
+        // let dr = (nr + nth - 1) / nth;
+
+        // // row range for this thread
+        // let ir0 = dr * ith;
+        // let ir1 = std::cmp::min(ir0 + dr, nr);
+
         // for i1 in ir0..ir1 {
         //     let dst_data = &mut dst[i1 * nb1..];
 
@@ -416,6 +420,11 @@ impl Map2 for Conv1D2S {
         //         }
         //     }
         // }
+        let time2 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        println!("{} time:{} ms", Self::OP, time2 - time1);
         Ok(())
     }
 }
@@ -467,7 +476,7 @@ impl Map for Repeat {
 }
 
 struct Norm;
-
+use std::time::{SystemTime, UNIX_EPOCH};
 impl Map for Norm {
     const OP: &'static str = "norm";
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
@@ -475,41 +484,67 @@ impl Map for Norm {
     }
 
     fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+        let time1 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
         assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
         let (ne00, ne01, ne02, ne03) = inp_d.dim4();
         let (_, nb01, nb02, nb03) = inp_d.stride_4d();
         let (_, nb1, nb2, nb3) = dst_d.stride_4d();
-
-        println!("shape:{:?}", (ne00, ne01, ne02, ne03));
-        println!("shape:{:?}", (nb01, nb02, nb03));
-        println!("shape:{:?}", (nb1, nb2, nb3));
 
         let eps: f64 = 1e-5;
         for i03 in 0..ne03 {
             for i02 in 0..ne02 {
                 for i01 in 0..ne01 {
                     let x = &inp[i01 * nb01 + i02 * nb02 + i03 * nb03..];
-                    let mut mean = 0.0f64;
-                    for chunk in x[..ne00].as_chunks::<32>().0 {
-                        let v = f32x32::from_slice(chunk);
-                        mean += v.reduce_sum() as f64;
-                    }
+
+                    let mut mean: f64 = x[..ne00]
+                        .chunks_exact(32)
+                        .map(|chunk| {
+                            let v = f32x32::from_slice(chunk);
+                            v.reduce_sum() as f64
+                        })
+                        .sum();
                     // for i00 in 0..ne00 {
                     //     mean += x[i00] as f64;
                     // }
                     mean /= ne00 as f64;
                     let y = &mut dst[i01 * nb1 + i02 * nb2 + i03 * nb3..];
-                    let mut sum2 = 0.0f64;
-                    for i00 in 0..ne00 {
-                        let v = x[i00] as f64 - mean;
-                        y[i00] = v as f32;
-                        sum2 += v * v;
-                    }
-                    let scale = (1.0 / (sum2 / ne00 as f64 + eps).sqrt()) as f32;
-                    vec_scale_f32(ne00, y, scale);
+                    let v_mean = std::simd::f32x32::splat(mean as f32);
+                    // let mut sum2 = 0.0f64;
+                    let sum2: f64 = y[..ne00]
+                        .chunks_exact_mut(32)
+                        .zip(x[..ne00].chunks_exact(32))
+                        .map(|(d, a)| {
+                            let va = std::simd::f32x32::from_slice(a);
+                            let va = va - v_mean;
+                            va.copy_to_slice(d);
+                            (va * va).reduce_sum() as f64
+                        })
+                        .sum();
+
+                    // for i00 in 0..ne00 {
+                    //     let v = x[i00] as f64 - mean;
+                    //     y[i00] = v as f32;
+                    //     sum2 += v * v;
+                    // }
+                    let scale =
+                        std::simd::f32x32::splat((1.0 / (sum2 / ne00 as f64 + eps).sqrt()) as f32);
+                    y[..ne00].chunks_exact_mut(32).for_each(|d| {
+                        let va = std::simd::f32x32::from_slice(d);
+                        let va = va * scale;
+                        va.copy_to_slice(d);
+                    });
+                    // vec_scale_f32(ne00, y, scale);
                 }
             }
         }
+        let time2 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        println!("{} time:{} ms", Self::OP, time2 - time1);
         Ok(())
     }
 }
