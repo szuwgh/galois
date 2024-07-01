@@ -61,6 +61,10 @@ impl Dim {
         &self.stride[..self.n_dims]
     }
 
+    pub fn stride_4d(&self) -> (usize, usize, usize, usize) {
+        dims4(&self.stride)
+    }
+
     pub fn stride_3d(&self) -> (usize, usize, usize) {
         dims3(&self.stride)
     }

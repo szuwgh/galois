@@ -1268,6 +1268,10 @@ impl Tensor {
         &self.dim.shape()
     }
 
+    pub fn stride(&self) -> &[usize] {
+        &self.dim.stride()
+    }
+
     pub fn dim1(&self) -> usize {
         self.dim.dim1()
     }

@@ -45,6 +45,13 @@ fn compute_gelu(v: f32) -> f32 {
         * (1.0 + f32::tanh((2.0f32 / std::f32::consts::PI).sqrt() * v * (1.0 + 0.044715 * v * v)))
 }
 
+#[inline]
+fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
+    for i in 0..n {
+        y[i] *= v;
+    }
+}
+
 unsafe impl Sync for CpuDeviceCache {}
 
 struct CpuDeviceCache {
@@ -353,6 +360,7 @@ impl Map2 for Conv1D2S {
 
         let mut inp_f16: Vec<f16> =
             vec![f16::from_f32(0.0); (ne10 + nh as usize) * ew0 * ne11 + ew0];
+
         for i11 in 0..ne11 {
             let src_chunk = &inp[i11 * nb11..];
 
@@ -453,6 +461,50 @@ impl Map for Repeat {
 
     fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
         self.f(inp, inp_d, dst, dst_d)
+    }
+}
+
+struct Norm;
+
+impl Map for Norm {
+    const OP: &'static str = "norm";
+    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
+        Ok(())
+    }
+
+    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+        assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
+        let (ne00, ne01, ne02, ne03) = inp_d.dim4();
+        let (_, nb01, nb02, nb03) = inp_d.stride_4d();
+        let (_, nb1, nb2, nb3) = dst_d.stride_4d();
+
+        println!("shape:{:?}", (ne00, ne01, ne02, ne03));
+        println!("shape:{:?}", (nb01, nb02, nb03));
+        println!("shape:{:?}", (nb1, nb2, nb3));
+
+        let eps: f64 = 1e-5;
+        for i03 in 0..ne03 {
+            for i02 in 0..ne02 {
+                for i01 in 0..ne01 {
+                    let x = &inp[i01 * nb01 + i02 * nb02 + i03 * nb03..];
+                    let mut mean = 0.0f64;
+                    for i00 in 0..ne00 {
+                        mean += x[i00] as f64;
+                    }
+                    mean /= ne00 as f64;
+                    let y = &mut dst[i01 * nb1 + i02 * nb2 + i03 * nb3..];
+                    let mut sum2 = 0.0f64;
+                    for i00 in 0..ne00 {
+                        let v = x[i00] as f64 - mean;
+                        y[i00] = v as f32;
+                        sum2 += v * v;
+                    }
+                    let scale = (1.0 / (sum2 / ne00 as f64 + eps).sqrt()) as f32;
+                    vec_scale_f32(ne00, y, scale);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -577,6 +629,19 @@ pub fn galois_gelu(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     match (src.device(), dst_device) {
         (Device::Cpu(s), Device::Cpu(d)) => {
             Gelu.map(s, src.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
+pub fn galois_norm(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(d)) => {
+            Norm.map(s, src.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
