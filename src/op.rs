@@ -10,10 +10,12 @@ use crate::Tensor;
 use crate::TensorType;
 use crate::F16;
 use core::cell::OnceCell;
+use core::simd::f32x32;
 use half::f16;
 use lazy_static::lazy_static;
 use num_traits::Float;
 use rayon::prelude::*;
+use std::simd::num::SimdFloat;
 
 const COEF_A: f32 = 0.044715;
 const SQRT_2_OVER_PI: f64 = 0.797_884_560_802_865_4;
@@ -488,9 +490,13 @@ impl Map for Norm {
                 for i01 in 0..ne01 {
                     let x = &inp[i01 * nb01 + i02 * nb02 + i03 * nb03..];
                     let mut mean = 0.0f64;
-                    for i00 in 0..ne00 {
-                        mean += x[i00] as f64;
+                    for chunk in x[..ne00].as_chunks::<32>().0 {
+                        let v = f32x32::from_slice(chunk);
+                        mean += v.reduce_sum() as f64;
                     }
+                    // for i00 in 0..ne00 {
+                    //     mean += x[i00] as f64;
+                    // }
                     mean /= ne00 as f64;
                     let y = &mut dst[i01 * nb1 + i02 * nb2 + i03 * nb3..];
                     let mut sum2 = 0.0f64;
