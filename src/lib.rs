@@ -539,7 +539,7 @@ impl<P: TensorType> RawData<P> {
         };
     }
 
-    fn as_bytes_mut(&self) -> &mut [u8] {
+    fn as_bytes_mut(&mut self) -> &mut [u8] {
         return match self {
             RawData::Own(v) => v.as_bytes_mut(),
             RawData::Ref(v) => v.as_bytes_mut(),
@@ -587,7 +587,7 @@ impl<P: TensorType> RawRef<P> {
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.ptr.as_ptr() as *mut u8,
-                self.len * std::mem::size_of::<P>(),
+                self.len * GS_TYPE_SIZE[P::DTYPE as usize],
             )
         }
     }
@@ -596,7 +596,7 @@ impl<P: TensorType> RawRef<P> {
         unsafe {
             std::slice::from_raw_parts(
                 self.ptr.as_ptr() as *const u8,
-                self.len * std::mem::size_of::<P>(),
+                self.len * GS_TYPE_SIZE[P::DTYPE as usize],
             )
         }
     }
@@ -724,7 +724,7 @@ impl<P: TensorType> RawPtr<P> {
         unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut P, self.len) }
     }
 
-    fn as_bytes_mut(&self) -> &mut [u8] {
+    fn as_bytes_mut(&mut self) -> &mut [u8] {
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.ptr.as_ptr() as *mut u8,
@@ -877,7 +877,7 @@ impl CpuDevice {
         };
     }
 
-    pub(crate) fn as_bytes_mut(&self) -> &mut [u8] {
+    pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         return match self {
             CpuDevice::F16(v) => v.as_bytes_mut(),
             CpuDevice::F32(v) => v.as_bytes_mut(),
@@ -980,7 +980,7 @@ enum Device {
 }
 
 impl Device {
-    pub(crate) fn as_bytes_mut(&self) -> &mut [u8] {
+    pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         return match self {
             Device::Cpu(v) => v.as_bytes_mut(),
             Device::Gpu() => {
@@ -1134,7 +1134,7 @@ impl Tensor {
     }
 
     fn from_device(data: Device, n_dims: usize, s: Shape, dtype: DType) -> Self {
-        let stride = s.strides();
+        let stride = s.ggml_stride();
         Self {
             dtype: dtype,
             data: data,
@@ -1237,15 +1237,22 @@ impl Tensor {
         self.device().nbytes()
     }
 
-    pub fn as_bytes_mut(&self) -> &mut [u8] {
-        self.device().as_bytes_mut()
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        self.device_mut().as_bytes_mut()
     }
 
     pub fn as_bytes(&self) -> &[u8] {
         self.device().as_bytes()
     }
 
-    pub unsafe fn as_slice_mut<T>(&self) -> &mut [T] {
+    pub unsafe fn as_slice<T>(&self) -> &[T] {
+        let bytes = self.as_bytes();
+        assert!(bytes.as_ptr() as usize % std::mem::align_of::<T>() == 0);
+        let len = bytes.len() / std::mem::size_of::<T>();
+        std::slice::from_raw_parts(bytes.as_ptr() as *mut T, len)
+    }
+
+    pub unsafe fn as_slice_mut<T>(&mut self) -> &mut [T] {
         let bytes = self.as_bytes_mut();
         assert!(bytes.as_ptr() as usize % std::mem::align_of::<T>() == 0);
         let len = bytes.len() / std::mem::size_of::<T>();
@@ -1261,6 +1268,10 @@ impl Tensor {
                 todo!()
             }
         }
+    }
+
+    pub fn ggml_shape(&self) -> &Layout {
+        &self.dim.s.0
     }
 
     pub fn shape(&self) -> &[usize] {
@@ -2114,7 +2125,7 @@ mod tests {
     fn test_matmul() {
         let m1 = mat(&[[1.0f32, 2.0], [3.0f32, 4.0], [3.0f32, 4.0]]);
         let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
-        let d = m1.matmul(&m2).unwrap();
+        let mut d = m1.matmul(&m2).unwrap();
         println!("{:?}", d);
         let v = unsafe { d.as_slice_mut::<f32>() };
         println!("{:?}", v);
@@ -2194,7 +2205,7 @@ mod tests {
     #[test]
     fn test_slice() -> GResult<()> {
         let mut a = vec![1.0, 2.0, 3.0, 4.0];
-        let t = Tensor::from_slice(&a, 2, Shape::from_array([2, 2]));
+        let mut t = Tensor::from_slice(&a, 2, Shape::from_array([2, 2]));
         a[1] = 15.0;
         println!("t:{:?}", t);
 

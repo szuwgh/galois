@@ -40,6 +40,7 @@ impl Dim {
         self.stride = stride
     }
 
+    // [a, b, c] => strides [b * c, c, 1]
     pub fn nd_stride(&self) -> Layout {
         let mut x: [usize; 4] = [0usize; 4];
         let s = self.shape().iter().rev();
@@ -321,8 +322,7 @@ impl Shape {
         Shape::from_vec(vec![0usize; s])
     }
 
-    // [a, b, c] => strides [b * c, c, 1]
-    pub fn strides(&self) -> [usize; 4] {
+    pub fn ggml_stride(&self) -> [usize; 4] {
         let mut x: [usize; 4] = [0usize; 4];
         x[0] = 1;
         for i in 1..MAX_DIM {
@@ -342,7 +342,7 @@ impl Shape {
         // x
     }
 
-    pub fn old_strides(&self, n_dims: usize) -> [usize; 4] {
+    pub fn nd_stride(&self, n_dims: usize) -> [usize; 4] {
         let mut x: [usize; 4] = [0usize; 4];
         //vec![0; self.dim()];
         let s = self.dims(n_dims).iter().rev();
@@ -507,9 +507,9 @@ mod tests {
     fn test_shape_iter() {
         let d = Shape::from_vec(vec![3, 2]);
         // let mut i = d.iter(2);
-        let strides = &d.strides();
+        let strides = &d.ggml_stride();
         println!("strides:{:?}", strides);
-        println!("old strides:{:?}", d.old_strides(2));
+        println!("old strides:{:?}", d.nd_stride(2));
 
         let dim = Dim {
             n_dims: 2,

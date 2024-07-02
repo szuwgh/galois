@@ -7,14 +7,19 @@ use crate::GError;
 //use super::broadcast::{broadcasting_binary_op, general_broadcasting};
 use crate::CpuDevice;
 use crate::Dim;
+use crate::Shape;
 use crate::Tensor;
 use crate::TensorType;
 use crate::F16;
 use core::cell::OnceCell;
 use core::simd::f32x32;
+use gemm::gemm;
+use gemm::Parallelism;
 use half::f16;
 use lazy_static::lazy_static;
 use num_traits::Float;
+use num_traits::One;
+use num_traits::Zero;
 use rayon::prelude::*;
 use std::simd::num::SimdFloat;
 
@@ -94,12 +99,47 @@ fn simd_vec_add_f32(inp1: &[f32], inp2: &[f32], dst: &mut [f32]) {
         });
     let dst_length = dst.len();
     // 处理剩余部分
-    let remainder_a = &inp1[inp1.len() / 4 * 4..];
-    let remainder_b = &inp2[inp2.len() / 4 * 4..];
-    let remainder_result = &mut dst[dst_length / 4 * 4..];
-    for i in 0..remainder_a.len() {
-        remainder_result[i] = remainder_a[i] + remainder_b[i];
-    }
+    // let remainder_a = &inp1[inp1.len() / 4 * 4..];
+    // let remainder_b = &inp2[inp2.len() / 4 * 4..];
+    // let remainder_result = &mut dst[dst_length / 4 * 4..];
+    // for i in 0..remainder_a.len() {
+    //     remainder_result[i] = remainder_a[i] + remainder_b[i];
+    // }
+
+    dst[dst_length / 4 * 4..]
+        .iter_mut()
+        .zip(
+            inp1[inp1.len() / 4 * 4..]
+                .iter()
+                .zip(inp2[inp2.len() / 4 * 4..].iter()),
+        )
+        .for_each(|(res, (a, b))| {
+            *res = *a + *b;
+        });
+}
+
+fn simd_vec_mul_f32(inp1: &[f32], inp2: &[f32], dst: &mut [f32]) {
+    dst.par_chunks_exact_mut(4)
+        .zip(inp1.par_chunks_exact(4))
+        .zip(inp2.par_chunks_exact(4))
+        .for_each(|((d, ia), ib)| {
+            let va = std::simd::f32x4::from_slice(ia);
+            let vb = std::simd::f32x4::from_slice(ib);
+            let vc = va * vb;
+            vc.copy_to_slice(d);
+        });
+    let dst_length = dst.len();
+    // 处理剩余部分
+    dst[dst_length / 4 * 4..]
+        .iter_mut()
+        .zip(
+            inp1[inp1.len() / 4 * 4..]
+                .iter()
+                .zip(inp2[inp2.len() / 4 * 4..].iter()),
+        )
+        .for_each(|(res, (a, b))| {
+            *res = *a * *b;
+        });
 }
 
 trait Op {
@@ -168,6 +208,69 @@ impl Map2 for Add {
     }
 }
 
+struct Mul;
+
+impl Map2 for Mul {
+    const OP: &'static str = "mul";
+    fn f_f32(
+        &self,
+        inp1: &[f32],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        assert!(
+            is_same_shape(inp1_d.shape(), inp2_d.shape())
+                && is_same_shape(inp1_d.shape(), dst_d.shape())
+        );
+        let time1 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        // let n = inp1_d.nrows();
+        // let nc = inp1_d.dim1();
+
+        let nb00 = inp1_d.stride_1d();
+
+        let nb10 = inp2_d.stride_1d();
+
+        let nb0 = dst_d.stride_1d();
+
+        assert!(nb00 == 1);
+        assert!(nb10 == 1);
+        assert!(nb0 == 1);
+        simd_vec_mul_f32(inp1, inp2, dst);
+        // if nb10 == 1 {
+        //     simd_vec_add_f32(inp1, inp2, dst);
+        // } else {
+        //     // for j in 0..n {
+        //     //     let dst_ptr = &mut dst[j * nb1..];
+        //     //     let src0_ptr = &inp1[j * nb01..];
+        //     //     for i in 0..nc {
+        //     //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
+        //     //     }
+        //     // }
+
+        //     dst.par_chunks_mut(nb1)
+        //         .enumerate()
+        //         .for_each(|(j, dst_ptr)| {
+        //             let src0_ptr = &inp1[j * nb01..];
+        //             for i in 0..nc {
+        //                 dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
+        //             }
+        //         });
+        // }
+        let time2 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        println!("{} time:{} us", Self::OP, time2 - time1);
+        Ok(())
+    }
+}
+
 struct Gelu;
 
 impl Map for Gelu {
@@ -191,12 +294,12 @@ struct Conv1D1S;
 impl Map2 for Conv1D1S {
     const OP: &'static str = "conv1d1s";
 
-    fn f_f16(
+    fn f_f16_f32(
         &self,
-        inp: &[f32],
-        inp_d: &Dim,
         kernel: &[f16],
         k_d: &Dim,
+        inp: &[f32],
+        inp_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
@@ -314,19 +417,15 @@ struct Conv1D2S;
 impl Map2 for Conv1D2S {
     const OP: &'static str = "conv1d2s";
 
-    fn f_f16(
+    fn f_f16_f32(
         &self,
-        inp: &[f32],
-        inp_d: &Dim,
         kernel: &[f16],
         k_d: &Dim,
+        inp: &[f32],
+        inp_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
-        let time1 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
         let (ne00, ne01, ne02) = k_d.dim3();
 
         let (ne10, ne11) = inp_d.dim2();
@@ -349,33 +448,66 @@ impl Map2 for Conv1D2S {
 
         let mut ker_f16: Vec<f16> = vec![f16::from_f32(0.0); ne02 * ew0 * ne00];
 
-        for i02 in 0..ne02 {
-            for i01 in 0..ne01 {
+        (0..ne02)
+            .flat_map(|i02| (0..ne01).map(move |i01| (i02, i01)))
+            .for_each(|(i02, i01)| {
                 let src_start = i02 * nb02 + i01 * nb01;
-                //  let src_end = src_start + ne00;
                 let src_slice = &kernel[src_start..];
 
                 let dst_start = i02 * ew0 * ne00;
-                // let dst_end = dst_start + ne00 * ew0;
                 let dst_slice = &mut ker_f16[dst_start..];
-                for i00 in 0..ne00 {
-                    dst_slice[i00 * ew0 + i01] = src_slice[i00];
-                }
-            }
-        }
+
+                (0..ne00).zip(src_slice.iter()).for_each(|(i00, &src_val)| {
+                    dst_slice[i00 * ew0 + i01] = src_val;
+                });
+            });
+
+        // for i02 in 0..ne02 {
+        //     for i01 in 0..ne01 {
+        //         let src_start = i02 * nb02 + i01 * nb01;
+        //         //  let src_end = src_start + ne00;
+        //         let src_slice = &kernel[src_start..];
+
+        //         let dst_start = i02 * ew0 * ne00;
+        //         // let dst_end = dst_start + ne00 * ew0;
+        //         let dst_slice = &mut ker_f16[dst_start..];
+        //         for i00 in 0..ne00 {
+        //             dst_slice[i00 * ew0 + i01] = src_slice[i00];
+        //         }
+        //     }
+        // }
+
+        // Create a vector of (i02, i01) pairs
+        // let indices: Vec<(usize, usize)> = (0..ne02)
+        //     .flat_map(|i02| (0..ne01).map(move |i01| (i02, i01)))
+        //     .collect();
+
+        // indices.par_iter().for_each(|&(i02, i01)| {
+        //     let src_start = i02 * nb02 + i01 * nb01;
+        //     let src_slice = &kernel[src_start..];
+
+        //     let dst_start = i02 * ew0 * ne00;
+        //     let dst_slice = &mut ker_f16[dst_start..];
+
+        //     (0..ne00).zip(src_slice.iter()).for_each(|(i00, &src_val)| {
+        //         dst_slice[i00 * ew0 + i01] = src_val;
+        //     });
+        // });
 
         let mut inp_f16: Vec<f16> =
             vec![f16::from_f32(0.0); (ne10 + nh as usize) * ew0 * ne11 + ew0];
 
         for i11 in 0..ne11 {
             let src_chunk = &inp[i11 * nb11..];
-
             for i10 in 0..ne10 {
                 let index = (i10 + nh as usize) * ew0 + i11;
                 inp_f16[index] = f16::from_f32(src_chunk[i10]);
             }
         }
-
+        let time1 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
         dst.par_chunks_mut(nb1)
             .enumerate()
             .for_each(|(i1, dst_data)| {
@@ -549,6 +681,258 @@ impl Map for Norm {
     }
 }
 
+struct MatMul;
+
+impl Map2 for MatMul {
+    const OP: &'static str = "MatMul";
+
+    fn f<T: TensorType>(
+        &self,
+        lhs: &[T],
+        lhs_l: &Dim,
+        rhs: &[T],
+        rhs_l: &Dim,
+        dst: &mut [T],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        let l_dim = lhs_l.shape();
+        let r_dim: &[usize] = rhs_l.shape();
+        let dim = l_dim.len();
+        if dim < 2 || r_dim.len() != dim {
+            return Err(GError::ShapeMismatchBinaryOp {
+                lhs: lhs_l.s.clone(),
+                rhs: rhs_l.s.clone(),
+                op: "matmul",
+            });
+        }
+        let m = l_dim[dim - 2];
+        let k = l_dim[dim - 1];
+        let k2 = r_dim[dim - 2];
+        let n = r_dim[dim - 1];
+        // let mut c_dim = l_dim[..dim - 2].to_vec();
+        // c_dim.extend(&[m, n]);
+        // let c_n_dims = c_dim.len();
+        // let c_shape = Shape::from_vec(c_dim);
+        let batching: usize = l_dim[..dim - 2].iter().product();
+        let batching_b: usize = r_dim[..dim - 2].iter().product();
+        if k != k2 || batching != batching_b {
+            return Err(GError::ShapeMismatchBinaryOp {
+                lhs: lhs_l.s.clone(),
+                rhs: rhs_l.s.clone(),
+                op: "matmul",
+            });
+        }
+
+        let (b, m, n, k) = (batching, m, n, k);
+        let lhs_stride = lhs_l.nd_stride();
+        let rhs_stride = rhs_l.nd_stride();
+        let rank = lhs_l.n_dims();
+        let lhs_cs = lhs_stride[rank - 1];
+        let lhs_rs = lhs_stride[rank - 2];
+
+        let rhs_cs = rhs_stride[rank - 1];
+        let rhs_rs = rhs_stride[rank - 2];
+
+        let a_skip: usize = match lhs_stride[..rank - 2] {
+            [s1, stride] if s1 == stride * lhs_l.shape()[1] => stride,
+            [stride] => stride,
+            [] => m * k,
+            _ => {
+                return Err(GError::MatMulUnexpectedStriding {
+                    lhs_l: lhs_l.clone(),
+                    rhs_l: rhs_l.clone(),
+                    bmnk: (b, m, n, k),
+                    msg: "non-contiguous lhs",
+                });
+            }
+        };
+        let b_skip: usize = match rhs_stride[..rank - 2] {
+            [s1, stride] if s1 == stride * rhs_l.shape()[1] => stride,
+            [stride] => stride,
+            [] => n * k,
+            _ => {
+                return Err(GError::MatMulUnexpectedStriding {
+                    lhs_l: lhs_l.clone(),
+                    rhs_l: rhs_l.clone(),
+                    bmnk: (b, m, n, k),
+                    msg: "non-contiguous lhs",
+                });
+            }
+        };
+        let c_skip: usize = m * n;
+        let dst_shape: Shape = Shape::from_array([m, n]);
+        let dst_strides = dst_shape.stride_contiguous();
+        let dst_rs = dst_strides[0];
+        let dst_cs = dst_strides[1];
+        //  let mut dst_f16 = vec![f16::zero(); b * m * n];
+        let num_threads = num_cpus::get();
+        let parallelism = if num_threads > 1 {
+            Parallelism::Rayon(num_threads)
+        } else {
+            Parallelism::None
+        };
+        for step in 0..b {
+            let lhs_p = &lhs[step * a_skip..];
+            let rhs_p = &rhs[step * b_skip..];
+            let dst_p = &mut dst[step * c_skip..];
+            unsafe {
+                gemm(
+                    /* m: usize = */ m,
+                    /* n: usize = */ n,
+                    /* k: usize = */ k,
+                    /* dst: *mut T = */ dst_p.as_mut_ptr(),
+                    /* dst_cs: isize = */ dst_cs as isize,
+                    /* dst_rs: isize = */ dst_rs as isize,
+                    /* read_dst: bool = */ false,
+                    /* lhs: *const T = */ lhs_p.as_ptr(),
+                    /* lhs_cs: isize = */ lhs_cs as isize,
+                    /* lhs_rs: isize = */ lhs_rs as isize,
+                    /* rhs: *const T = */ rhs_p.as_ptr(),
+                    /* rhs_cs: isize = */ rhs_cs as isize,
+                    /* rhs_rs: isize = */ rhs_rs as isize,
+                    /* alpha: T = */ T::zero(),
+                    /* beta: T = */ T::one(),
+                    /* conj_dst: bool = */ false,
+                    /* conj_lhs: bool = */ false,
+                    /* conj_rhs: bool = */ false,
+                    parallelism,
+                )
+            }
+        }
+        Ok(())
+    }
+
+    fn f_f16_f32(
+        &self,
+        lhs: &[f16],
+        lhs_l: &Dim,
+        rhs: &[f32],
+        rhs_l: &Dim,
+        dst: &mut [f32],
+        dst_d1: &Dim,
+    ) -> GResult<()> {
+        let time1 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let l_dim = lhs_l.shape();
+        let r_dim: &[usize] = rhs_l.shape();
+        let dim = l_dim.len();
+        if dim < 2 || r_dim.len() != dim {
+            return Err(GError::ShapeMismatchBinaryOp {
+                lhs: lhs_l.s.clone(),
+                rhs: rhs_l.s.clone(),
+                op: "matmul",
+            });
+        }
+        let m = l_dim[dim - 2];
+        let k = l_dim[dim - 1];
+        let k2 = r_dim[dim - 2];
+        let n = r_dim[dim - 1];
+        //  let mut c_dim = l_dim[..dim - 2].to_vec();
+        // c_dim.extend(&[m, n]);
+        //  let c_n_dims = c_dim.len();
+        //  let c_shape = Shape::from_vec(c_dim);
+        let batching: usize = l_dim[..dim - 2].iter().product();
+        let batching_b: usize = r_dim[..dim - 2].iter().product();
+        if k != k2 || batching != batching_b {
+            return Err(GError::ShapeMismatchBinaryOp {
+                lhs: lhs_l.s.clone(),
+                rhs: rhs_l.s.clone(),
+                op: "matmul",
+            });
+        }
+
+        let (b, m, n, k) = (batching, m, n, k);
+        let lhs_stride = lhs_l.nd_stride();
+        let rhs_stride = rhs_l.nd_stride();
+        let rank = lhs_l.n_dims();
+        let lhs_cs = lhs_stride[rank - 1];
+        let lhs_rs = lhs_stride[rank - 2];
+
+        let rhs_cs = rhs_stride[rank - 1];
+        let rhs_rs = rhs_stride[rank - 2];
+
+        let a_skip: usize = match lhs_stride[..rank - 2] {
+            [s1, stride] if s1 == stride * lhs_l.shape()[1] => stride,
+            [stride] => stride,
+            [] => m * k,
+            _ => {
+                return Err(GError::MatMulUnexpectedStriding {
+                    lhs_l: lhs_l.clone(),
+                    rhs_l: rhs_l.clone(),
+                    bmnk: (b, m, n, k),
+                    msg: "non-contiguous lhs",
+                });
+            }
+        };
+        let b_skip: usize = match rhs_stride[..rank - 2] {
+            [s1, stride] if s1 == stride * rhs_l.shape()[1] => stride,
+            [stride] => stride,
+            [] => n * k,
+            _ => {
+                return Err(GError::MatMulUnexpectedStriding {
+                    lhs_l: lhs_l.clone(),
+                    rhs_l: rhs_l.clone(),
+                    bmnk: (b, m, n, k),
+                    msg: "non-contiguous lhs",
+                });
+            }
+        };
+        let c_skip: usize = m * n;
+        let dst_shape: Shape = Shape::from_array([m, n]);
+        let dst_strides = dst_shape.stride_contiguous();
+        let dst_rs = dst_strides[0];
+        let dst_cs = dst_strides[1];
+        let mut dst_f16 = vec![f16::zero(); b * m * n];
+        let num_threads = num_cpus::get();
+        let parallelism = if num_threads > 1 {
+            Parallelism::Rayon(num_threads)
+        } else {
+            Parallelism::None
+        };
+        let rhs_f16: Vec<f16> = rhs.iter().map(|e| f16::from_f32(*e)).collect();
+        for step in 0..b {
+            let lhs_p = &lhs[step * a_skip..];
+            let rhs_p = &rhs_f16[step * b_skip..];
+            let dst_p = &mut dst_f16[step * c_skip..];
+            unsafe {
+                gemm(
+                    /* m: usize = */ m,
+                    /* n: usize = */ n,
+                    /* k: usize = */ k,
+                    /* dst: *mut T = */ dst_p.as_mut_ptr(),
+                    /* dst_cs: isize = */ dst_cs as isize,
+                    /* dst_rs: isize = */ dst_rs as isize,
+                    /* read_dst: bool = */ false,
+                    /* lhs: *const T = */ lhs_p.as_ptr(),
+                    /* lhs_cs: isize = */ lhs_cs as isize,
+                    /* lhs_rs: isize = */ lhs_rs as isize,
+                    /* rhs: *const T = */ rhs_p.as_ptr(),
+                    /* rhs_cs: isize = */ rhs_cs as isize,
+                    /* rhs_rs: isize = */ rhs_rs as isize,
+                    /* alpha: T = */ f16::zero(),
+                    /* beta: T = */ f16::one(),
+                    /* conj_dst: bool = */ false,
+                    /* conj_lhs: bool = */ false,
+                    /* conj_rhs: bool = */ false,
+                    parallelism,
+                )
+            }
+        }
+
+        dst.iter_mut()
+            .zip(dst_f16.iter())
+            .for_each(|(d, s)| *d = s.to_f32());
+        let time2 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        println!("{} time:{} ms", Self::OP, time2 - time1);
+        Ok(())
+    }
+}
+
 trait Map2 {
     const OP: &'static str;
     fn f<T: TensorType>(
@@ -575,12 +959,12 @@ trait Map2 {
         self.f(inp, inp_d, k, k_d, dst, dst_d)
     }
 
-    fn f_f16(
+    fn f_f16_f32(
         &self,
-        inp: &[f32],
-        inp_d: &Dim,
         k: &[f16],
         k_d: &Dim,
+        inp: &[f32],
+        inp_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
@@ -603,8 +987,8 @@ trait Map2 {
             (CpuDevice::F32(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
                 self.f_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
-            (CpuDevice::F32(v1), CpuDevice::F16(v2), CpuDevice::F32(d)) => {
-                self.f_f16(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+            (CpuDevice::F16(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+                self.f_f16_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             _ => {
                 todo!()
@@ -613,11 +997,11 @@ trait Map2 {
     }
 }
 
-pub fn galois_conv_1d_1s(src: &Tensor, kernel: &Tensor, dst: &mut Tensor) -> GResult<()> {
+pub fn galois_conv_1d_1s(kernel: &Tensor, src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), kernel.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
-            Conv1D1S.map(s, src.dim(), k, kernel.dim(), d, dst_dim)?;
+    match (kernel.device(), src.device(), dst_device) {
+        (Device::Cpu(k), Device::Cpu(s), Device::Cpu(d)) => {
+            Conv1D1S.map(k, kernel.dim(), s, src.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -626,11 +1010,11 @@ pub fn galois_conv_1d_1s(src: &Tensor, kernel: &Tensor, dst: &mut Tensor) -> GRe
     Ok(())
 }
 
-pub fn galois_conv_1d_2s(src: &Tensor, kernel: &Tensor, dst: &mut Tensor) -> GResult<()> {
+pub fn galois_conv_1d_2s(kernel: &Tensor, src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), kernel.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
-            Conv1D2S.map(s, src.dim(), k, kernel.dim(), d, dst_dim)?;
+    match (kernel.device(), src.device(), dst_device) {
+        (Device::Cpu(k), Device::Cpu(s), Device::Cpu(d)) => {
+            Conv1D2S.map(k, kernel.dim(), s, src.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -657,6 +1041,32 @@ pub fn galois_add(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
     match (a.device(), b.device(), dst_device) {
         (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
             Add.map(s, a.dim(), k, b.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
+pub fn galois_matmul(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (a.device(), b.device(), dst_device) {
+        (Device::Cpu(a1), Device::Cpu(b1), Device::Cpu(d)) => {
+            MatMul.map(a1, a.dim(), b1, b.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
+pub fn galois_mul(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (a.device(), b.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
+            Mul.map(s, a.dim(), k, b.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -709,6 +1119,74 @@ trait Map {
                 todo!()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mat;
+
+    //  [[ F32(7.0), F32(10.0), F32(14.0)],
+    //  [ F32(15.0), F32(22.0), F32(32.0)],
+    //  [ F32(15.0), F32(22.0), F32(32.0)]]
+    // [7.0, 10.0, 14.0, 15.0, 22.0, 32.0, 15.0, 22.0, 32.0]
+    #[test]
+    fn test_matmul_f32() {
+        let a = mat(&[[1.0f32, 2.0], [3.0f32, 4.0], [3.0f32, 4.0]]);
+        let b = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
+
+        // let ne = [
+        //     a.ggml_shape()[1],
+        //     b.ggml_shape()[1],
+        //     a.ggml_shape()[2],
+        //     b.ggml_shape()[3],
+        // ];
+        //println!("{:?}", ne);
+        let v = vec![0.0f32; 9];
+        let mut d = Tensor::from_vec(v, 2, Shape::from_array([3, 3]));
+        // MatMul.map(
+        //     &m1.device(),
+        //     &m1.dim,
+        //     m2.device(),
+        //     &m2.dim,
+        //     d.device_mut(),
+        //     &d.dim,
+        // );
+        galois_matmul(&a, &b, &mut d).unwrap();
+        println!("{:?}", d);
+    }
+
+    #[test]
+    fn test_matmul_f16() {
+        let m1 = mat(&[
+            [f16::from_f32(1.0), f16::from_f32(2.0)],
+            [f16::from_f32(3.0), f16::from_f32(4.0)],
+            [f16::from_f32(3.0), f16::from_f32(4.0)],
+        ]);
+
+        let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
+        let v = vec![0.0f32; 9];
+        let mut d = Tensor::from_vec(v, 2, Shape::from_array([3, 3]));
+        // MatMul.map(
+        //     &m1.device(),
+        //     &m1.dim,
+        //     m2.device(),
+        //     &m2.dim,
+        //     d.device_mut(),
+        //     &d.dim,
+        // );
+        galois_matmul(&m1, &m2, &mut d).unwrap();
+        println!("{:?}", d);
+    }
+
+    #[test]
+    fn test_simd_vec_add_f32() {
+        let mut a = [1.0f32, 2.0, 3.0, 1.0f32, 2.0, 3.0];
+        let mut b = [2.0f32, 3.0, 4.0, 1.0f32, 2.0, 3.0];
+        let mut c = vec![0.0f32; a.len()];
+        simd_vec_add_f32(&a, &b, &mut c);
+        println!("{:?}", c);
     }
 }
 
@@ -980,20 +1458,6 @@ macro_rules! impl_float_unary_op {
 impl_float_unary_op!(f16);
 impl_float_unary_op!(f32);
 impl_float_unary_op!(f64);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_simd_vec_add_f32() {
-        let mut a = [1.0f32, 2.0, 3.0, 1.0f32, 2.0, 3.0];
-        let mut b = [2.0f32, 3.0, 4.0, 1.0f32, 2.0, 3.0];
-        let mut c = vec![0.0f32; a.len()];
-        simd_vec_add_f32(&a, &b, &mut c);
-        println!("{:?}", c);
-    }
-}
 
 // impl_binary_op!(Add, add); // +
 // impl_binary_op!(Sub, sub); // -
