@@ -46,7 +46,7 @@ pub enum DType {
 }
 
 pub const GS_TYPE_SIZE: [usize; DType::TypeCount as usize] = [
-    std::mem::size_of::<f16>(),
+    std::mem::size_of::<F16>(),
     std::mem::size_of::<f32>(),
     std::mem::size_of::<f64>(),
 ];
