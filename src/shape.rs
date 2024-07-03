@@ -181,6 +181,14 @@ impl Dim {
         true
     }
 
+    //内存是否连续
+    pub fn ggml_is_contiguous(&self) -> bool {
+        return self.stride[0] == 1
+            && self.stride[1] == self.stride[0] * self.s.layout()[0]
+            && self.stride[2] == self.stride[1] * self.s.layout()[1]
+            && self.stride[3] == self.stride[2] * self.s.layout()[2];
+    }
+
     pub(crate) fn strided_blocks(&self) -> crate::StridedBlocks {
         let mut block_len = 1;
         let mut contiguous_dims = 0; // These are counted from the right.
@@ -232,6 +240,10 @@ impl Shape {
         let mut s = Layout::one();
         s.iter_mut().zip(&v).for_each(|(si, vi)| *si = *vi);
         Shape(s)
+    }
+
+    pub fn layout(&self) -> &Layout {
+        &self.0
     }
 
     pub fn from_array<const N: usize>(v: [usize; N]) -> Shape {
@@ -329,17 +341,6 @@ impl Shape {
             x[i] = x[i - 1] * self.0[i - 1];
         }
         x
-        // let mut x: [usize; 4] = [0usize; 4];
-        // //vec![0; self.dim()];
-        // let s = self.dims(2).iter().rev();
-        // let mut prod = 1;
-        // let mut temp = 1;
-        // for (m, dim) in x[..2].iter_mut().rev().zip(s) {
-        //     prod *= temp;
-        //     *m = prod;
-        //     temp = *dim;
-        // }
-        // x
     }
 
     pub fn nd_stride(&self, n_dims: usize) -> [usize; 4] {

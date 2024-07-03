@@ -683,6 +683,16 @@ impl Map for Norm {
 
 struct MatMul;
 
+impl MatMul {
+    fn compute_forward_mul_mat_use_gemm(&self, lhs_l: &Dim, rhs_l: &Dim) -> bool {
+        // TODO: find the optimal values for these
+        if lhs_l.ggml_is_contiguous() && rhs_l.ggml_is_contiguous() {
+            return true;
+        }
+        return false;
+    }
+}
+
 impl Map2 for MatMul {
     const OP: &'static str = "MatMul";
 
@@ -815,6 +825,10 @@ impl Map2 for MatMul {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
+        if !self.compute_forward_mul_mat_use_gemm(lhs_l, rhs_l) {
+            println!("not use gemm");
+            return Ok(());
+        }
         let l_dim = lhs_l.shape();
         let r_dim: &[usize] = rhs_l.shape();
         let dim = l_dim.len();
