@@ -10,12 +10,11 @@ use crate::Dim;
 use crate::Shape;
 use crate::Tensor;
 use crate::TensorType;
-use crate::F16;
 use core::cell::OnceCell;
 use core::simd::f32x32;
+use gemm::f16;
 use gemm::gemm;
 use gemm::Parallelism;
-use half::f16;
 use lazy_static::lazy_static;
 use num_traits::Float;
 use num_traits::One;
@@ -694,7 +693,7 @@ impl MatMul {
 }
 
 impl Map2 for MatMul {
-    const OP: &'static str = "MatMul";
+    const OP: &'static str = "matmul";
 
     fn f<T: TensorType>(
         &self,
@@ -897,7 +896,7 @@ impl Map2 for MatMul {
         let dst_shape: Shape = Shape::from_array([m, n]);
         let dst_strides = dst_shape.stride_contiguous();
         let dst_rs = dst_strides[0];
-        let dst_cs = dst_strides[1];
+        let dst_cs: usize = dst_strides[1];
         let mut dst_f16 = vec![f16::zero(); b * m * n];
         let num_threads = num_cpus::get();
         let parallelism = if num_threads > 1 {
@@ -905,7 +904,7 @@ impl Map2 for MatMul {
         } else {
             Parallelism::None
         };
-        let rhs_f16: Vec<f16> = rhs.iter().map(|e| f16::from_f32(*e)).collect();
+        let rhs_f16: Vec<f16> = rhs.par_iter().map(|e| f16::from_f32(*e)).collect();
         for step in 0..b {
             let lhs_p = &lhs[step * a_skip..];
             let rhs_p = &rhs_f16[step * b_skip..];
@@ -935,8 +934,8 @@ impl Map2 for MatMul {
             }
         }
 
-        dst.iter_mut()
-            .zip(dst_f16.iter())
+        dst.par_iter_mut()
+            .zip(dst_f16.par_iter())
             .for_each(|(d, s)| *d = s.to_f32());
         let time2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1079,8 +1078,8 @@ pub fn galois_matmul(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
 pub fn galois_mul(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
     match (a.device(), b.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
-            Mul.map(s, a.dim(), k, b.dim(), d, dst_dim)?;
+        (Device::Cpu(a1), Device::Cpu(b1), Device::Cpu(d)) => {
+            Mul.map(a1, a.dim(), b1, b.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -1174,9 +1173,9 @@ mod tests {
     #[test]
     fn test_matmul_f16() {
         let m1 = mat(&[
-            [f16::from_f32(1.0), f16::from_f32(2.0)],
-            [f16::from_f32(3.0), f16::from_f32(4.0)],
-            [f16::from_f32(3.0), f16::from_f32(4.0)],
+            [f16::from_f32(0.123), f16::from_f32(0.456)],
+            [f16::from_f32(-0.123), f16::from_f32(9.63)],
+            [f16::from_f32(7.996), f16::from_f32(7.9687)],
         ]);
 
         let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
