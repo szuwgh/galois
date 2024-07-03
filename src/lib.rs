@@ -181,13 +181,13 @@ pub trait TensorType:
     + 'static
 {
     const DTYPE: DType;
-    #[inline(always)]
-    unsafe fn vec_dot(lhs: *const Self, rhs: *const Self, res: *mut Self, len: usize) {
-        *res = Self::zero();
-        for i in 0..len {
-            *res += *lhs.add(i) * *rhs.add(i)
-        }
-    }
+    // #[inline(always)]
+    // unsafe fn vec_dot(lhs: *const Self, rhs: *const Self, res: *mut Self, len: usize) {
+    //     *res = Self::zero();
+    //     for i in 0..len {
+    //         *res += *lhs.add(i) * *rhs.add(i)
+    //     }
+    // }
 
     // #[cfg(not(target_feature = "avx"))]
     // #[inline(always)]

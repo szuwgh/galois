@@ -51,7 +51,7 @@ use crate::{error::GResult, shape::Shape, Tensor};
 //     Some(new_stride)
 // }
 
-// pub fn broadcasting_binary_op<A>(t1: &Shape, t2: &Shape) -> GResult<Shape> {
+// pub fn broadcasting_binary_op(t1: &Shape, t2: &Shape) -> GResult<Shape> {
 //     let (d1, d2) = (t1.dim(), t2.dim());
 //     let k = if d1 > d2 { d1 - d2 } else { d2 - d1 };
 //     let slice1 = t1.as_slice();
@@ -73,7 +73,7 @@ use crate::{error::GResult, shape::Shape, Tensor};
 //     Ok(output)
 // }
 
-// pub fn broadcasting_matmul_op<A>(lhs: &Shape, rhs: &Shape) -> GResult<(Shape, Shape)> {
+// pub fn broadcasting_matmul_op(lhs: &Shape, rhs: &Shape) -> GResult<(Shape, Shape)> {
 //     let lhs_dims = lhs.as_slice();
 //     let rhs_dims = rhs.as_slice();
 //     if lhs_dims.len() < 2 || rhs_dims.len() < 2 {
@@ -87,7 +87,7 @@ use crate::{error::GResult, shape::Shape, Tensor};
 
 //     let lhs_b = Shape::from_slice(&lhs_dims[..lhs_dims.len() - 2]);
 //     let rhs_b = Shape::from_slice(&rhs_dims[..rhs_dims.len() - 2]);
-//     let bcast = broadcasting_binary_op::<A>(&lhs_b, &rhs_b)?;
+//     let bcast = broadcasting_binary_op(&lhs_b, &rhs_b)?;
 //     let bcast_dims = bcast.as_slice();
 
 //     let bcast_lhs = [bcast_dims, &[m, lhs_k]].concat();
