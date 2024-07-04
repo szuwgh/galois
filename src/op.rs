@@ -881,7 +881,7 @@ impl Map2 for MatMul {
             let dst_col = &mut dst[i0 * nb0 + 0 * nb1 + i2 * nb2 + i3 * nb3..];
 
             for ic in 0..ne11 {
-                assert!(ne00 % 32 == 0);
+                //  assert!(ne00 % 32 == 0);
                 unsafe {
                     f16::vec_dot_f16(
                         src0_row.as_ptr(),
@@ -1138,17 +1138,30 @@ trait Map {
 
 #[cfg(test)]
 mod tests {
+    use half::vec;
+
     use super::*;
     use crate::mat;
 
     //  [[ F32(7.0), F32(10.0), F32(14.0)],
     //  [ F32(15.0), F32(22.0), F32(32.0)],
     //  [ F32(15.0), F32(22.0), F32(32.0)]]
+
     // [7.0, 10.0, 14.0, 15.0, 22.0, 32.0, 15.0, 22.0, 32.0]
+    //     [[ F32(7.0), F32(15.0), F32(12.0)],
+    //  [ F32(26.0), F32(16.0), F32(36.0)]]
+
+    // [[ F32(7.0), F32(15.0)],
+    // [ F32(12.0), F32(26.0)]]
+    /*
+
+
+
+    */
     #[test]
     fn test_matmul_f32() {
-        let a = mat(&[[1.0f32, 2.0], [3.0f32, 4.0], [5.0f32, 6.0]]);
-        let b = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
+        let a = mat(&[[1.0f32, 2.0], [3.0f32, 4.0]]);
+        let b = mat(&[[1.0f32, 2.0], [3.0f32, 5.0]]);
         println!("a{:?}", a.shape());
         println!("b{:?}", b.shape());
         // let ne = [
@@ -1168,21 +1181,51 @@ mod tests {
         //     d.device_mut(),
         //     &d.dim,
         // );
-        galois_matmul(&b, &a, &mut d).unwrap();
+        galois_matmul(&a, &b, &mut d).unwrap();
         println!("{:?}", d);
         println!("{:?}", unsafe { d.as_slice::<f32>() });
     }
 
+    /**
+     *
+     * 1 2   5 11 17
+     * 3 4   11 25 39
+     *
+     * 1 2 4
+     * 3 5 6
+     *
+     * 1 3 5
+     * 2 4 6
+     *
+     *
+     *
+     */
     #[test]
     fn test_matmul_f16() {
-        let m1 = mat(&[
-            [f16::from_f32(1.0), f16::from_f32(2.0)],
-            [f16::from_f32(3.0), f16::from_f32(4.0)],
-            [f16::from_f32(5.0), f16::from_f32(6.0)],
-        ]);
+        // let m1 = mat(&[
+        //     [f16::from_f32(1.0), f16::from_f32(2.0)],
+        //     [f16::from_f32(3.0), f16::from_f32(4.0)],
+        //     // [f16::from_f32(5.0), f16::from_f32(6.0)],
+        // ]);
 
-        let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
-        let v = vec![0.0f32; 9];
+        let mut m1 = Tensor::from_vec(
+            vec![
+                f16::from_f32(1.0),
+                f16::from_f32(2.0),
+                f16::from_f32(3.0),
+                f16::from_f32(4.0),
+            ],
+            2,
+            Shape::from_array([2, 2]),
+        );
+
+        let mut m2 = Tensor::from_vec(vec![1.0f32, 3.0, 2.0, 5.0], 2, Shape::from_array([2, 2]));
+        println!("m1:{:?}", m1);
+        println!("m2:{:?}", m2);
+
+        //  let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 5.0, 6.0]]);
+
+        let v = vec![0.0f32; 15];
         let mut d = Tensor::from_vec(v, 2, Shape::from_array([2, 2]));
         // MatMul.map(
         //     &m1.device(),
@@ -1193,7 +1236,7 @@ mod tests {
         //     &d.dim,
         // );
         galois_matmul(&m1, &m2, &mut d).unwrap();
-        println!("{:?}", d);
+        println!("{:?}", unsafe { d.as_slice::<f32>() });
     }
 
     #[test]

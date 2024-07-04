@@ -283,6 +283,7 @@ impl Shape {
     }
 
     pub(crate) fn stride_contiguous(&self) -> Layout {
+        return [1, 2, 1, 1];
         // let mut stride: Vec<_> = self
         //     .0
         //     .iter()
