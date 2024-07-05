@@ -19,7 +19,6 @@ use crate::error::{GError, GResult};
 use crate::shape::Dim;
 pub use crate::shape::{Axis, Shape};
 use crate::zip::Zip;
-use core::arch::x86_64::*;
 use core::ptr::{self, NonNull};
 use op::UnaryOp;
 use shape::ShapeIter;
@@ -1133,12 +1132,16 @@ impl Tensor {
         Tensor::from_device(Device::Cpu(cpu_dev), 3, shape, A::DTYPE)
     }
 
-    fn from_device(data: Device, n_dims: usize, s: Shape, dtype: DType) -> Self {
-        let stride = s.ggml_stride();
+    fn from_device(data: Device, n_dims: usize, shape: Shape, dtype: DType) -> Self {
+        let stride = shape.ggml_stride();
         Self {
             dtype: dtype,
             data: data,
-            dim: Dim { n_dims, s, stride },
+            dim: Dim {
+                n_dims,
+                shape,
+                stride,
+            },
         }
     }
 
@@ -1185,6 +1188,22 @@ impl Tensor {
             data: self.data.as_ref(),
             dim: self.dim.clone(),
         }
+    }
+
+    pub fn shape_layout_mut(&mut self) -> &mut Layout {
+        self.dim.shape_layout_mut()
+    }
+
+    pub fn shape_layout(&self) -> &Layout {
+        self.dim.shape_layout()
+    }
+
+    pub fn stride_layout_mut(&mut self) -> &mut Layout {
+        self.dim.stride_layout_mut()
+    }
+
+    pub fn stride_layout(&self) -> &Layout {
+        self.dim.stride_layout()
     }
 
     pub fn from_elem<A: TensorType>(a: A, n_dims: usize, s: Shape) -> Self
@@ -1271,7 +1290,7 @@ impl Tensor {
     }
 
     pub fn ggml_shape(&self) -> &Layout {
-        &self.dim.s.0
+        self.dim.shape_layout()
     }
 
     pub fn shape(&self) -> &[usize] {
@@ -1318,7 +1337,7 @@ impl Tensor {
         let s = self.dim().shape();
         if dim > s.len() {
             return Err(GError::DimOutOfRange {
-                shape: self.dim.s.clone(),
+                shape: self.dim.shape.clone(),
                 dim: dim,
                 op: "single_dim",
             });
@@ -1383,7 +1402,7 @@ impl Tensor {
         let dims = self.dim().shape();
         let err = |msg| {
             Err::<(), _>(GError::NarrowInvalidArgs {
-                shape: self.dim().s.clone(),
+                shape: self.dim().shape.clone(),
                 dim,
                 start,
                 len,
@@ -1442,8 +1461,8 @@ impl Tensor {
         let dim = l_dim.len();
         if dim < 2 || r_dim.len() != dim {
             return Err(GError::ShapeMismatchBinaryOp {
-                lhs: self.dim().s.clone(),
-                rhs: rhs.dim().s.clone(),
+                lhs: self.dim().shape.clone(),
+                rhs: rhs.dim().shape.clone(),
                 op: "matmul",
             });
         }
@@ -1459,8 +1478,8 @@ impl Tensor {
         let batching_b: usize = r_dim[..dim - 2].iter().product();
         if k != k2 || batching != batching_b {
             return Err(GError::ShapeMismatchBinaryOp {
-                lhs: self.dim().s.clone(),
-                rhs: rhs.dim().s.clone(),
+                lhs: self.dim().shape.clone(),
+                rhs: rhs.dim().shape.clone(),
                 op: "matmul",
             });
         }
@@ -1530,14 +1549,14 @@ impl Tensor {
     pub fn transpose(&mut self, d1: usize, d2: usize) -> GResult<Tensor> {
         if d1 > self.size() {
             return Err(GError::DimOutOfRange {
-                shape: self.dim().s.clone(),
+                shape: self.dim().shape.clone(),
                 dim: d1,
                 op: "transpose",
             });
         }
         if d2 > self.size() {
             return Err(GError::DimOutOfRange {
-                shape: self.dim().s.clone(),
+                shape: self.dim().shape.clone(),
                 dim: d2,
                 op: "transpose",
             });
@@ -1550,17 +1569,73 @@ impl Tensor {
         })
     }
 
+    pub fn permute(
+        &mut self,
+        axis0: usize,
+        axis1: usize,
+        axis2: usize,
+        axis3: usize,
+    ) -> GResult<Tensor> {
+        assert!(axis0 < MAX_DIM);
+        assert!(axis1 < MAX_DIM);
+        assert!(axis2 < MAX_DIM);
+        assert!(axis3 < MAX_DIM);
+
+        assert!(axis0 != axis1);
+        assert!(axis0 != axis2);
+        assert!(axis0 != axis3);
+        assert!(axis1 != axis2);
+        assert!(axis1 != axis3);
+        assert!(axis2 != axis3);
+
+        let shape = self.shape_layout();
+        let stride = self.stride();
+
+        let mut ne = Layout::default();
+        let mut nb = Layout::default();
+
+        ne[axis0] = shape[0];
+        ne[axis1] = shape[1];
+        ne[axis2] = shape[2];
+        ne[axis3] = shape[3];
+
+        nb[axis0] = stride[0];
+        nb[axis1] = stride[1];
+        nb[axis2] = stride[2];
+        nb[axis3] = stride[3];
+
+        let mut result = self.view();
+
+        {
+            let shape_view = result.shape_layout_mut();
+            shape_view[0] = ne[0];
+            shape_view[1] = ne[1];
+            shape_view[2] = ne[2];
+            shape_view[3] = ne[3];
+        }
+
+        {
+            let stride_view = result.stride_layout_mut();
+            stride_view[0] = nb[0];
+            stride_view[1] = nb[1];
+            stride_view[2] = nb[2];
+            stride_view[3] = nb[3];
+        }
+
+        Ok(result)
+    }
+
     fn into_transpose(mut self, d1: usize, d2: usize) -> GResult<Tensor> {
         if d1 > self.size() {
             return Err(GError::DimOutOfRange {
-                shape: self.dim().s.clone(),
+                shape: self.dim().shape.clone(),
                 dim: d1,
                 op: "transpose",
             });
         }
         if d2 > self.size() {
             return Err(GError::DimOutOfRange {
-                shape: self.dim().s.clone(),
+                shape: self.dim().shape.clone(),
                 dim: d2,
                 op: "transpose",
             });
@@ -1646,7 +1721,7 @@ impl Tensor {
         let axis = a.index();
         let stride = nd_stride[axis];
         let offset = index * stride;
-        let axis_dim = self.dim.s.select_axis(a);
+        let axis_dim = self.dim.shape.select_axis(a);
         let s = shape::select_axis(&nd_stride, a);
         // let raw_ref = RawRef {
         //     ptr: unsafe { self.data.as_ptr().offset(offset as isize) },
@@ -1659,7 +1734,7 @@ impl Tensor {
             data: self.device().offset(offset),
             dim: Dim {
                 n_dims: n_dims,
-                s: axis_dim,
+                shape: axis_dim,
                 stride: s,
             },
         }
@@ -1669,7 +1744,7 @@ impl Tensor {
         let axis = a.index();
         let stride = self.dim.stride[axis];
         let offset = index * stride;
-        let axis_dim = self.dim.s.select_axis(a);
+        let axis_dim = self.dim.shape.select_axis(a);
         let s = shape::select_axis(&self.dim.stride(), a);
         // let raw_ref = RawRef {
         //     ptr: unsafe { self.as_ptr().offset(offset as isize) },
@@ -1681,7 +1756,7 @@ impl Tensor {
             data: self.device().offset(offset), //Device::Cpu(RawData::Ref(raw_ref)),
             dim: Dim {
                 n_dims: n_dims,
-                s: axis_dim,
+                shape: axis_dim,
                 stride: s,
             },
         }
@@ -1691,7 +1766,7 @@ impl Tensor {
         TensorIter {
             n_dims: self.dim().n_dims(),
             device: &self.data,
-            shape_iter: self.dim.s.iter(self.dim().n_dims()),
+            shape_iter: self.dim.shape.iter(self.dim().n_dims()),
             strides: self.dim.nd_stride(),
         }
     }

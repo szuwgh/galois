@@ -797,8 +797,8 @@ impl Map2 for MatMul {
         let dim = l_dim.len();
         if dim < 2 || r_dim.len() != dim {
             return Err(GError::ShapeMismatchBinaryOp {
-                lhs: lhs_l.s.clone(),
-                rhs: rhs_l.s.clone(),
+                lhs: lhs_l.shape.clone(),
+                rhs: rhs_l.shape.clone(),
                 op: "matmul",
             });
         }
@@ -814,8 +814,8 @@ impl Map2 for MatMul {
         let batching_b: usize = r_dim[..dim - 2].iter().product();
         if k != k2 || batching != batching_b {
             return Err(GError::ShapeMismatchBinaryOp {
-                lhs: lhs_l.s.clone(),
-                rhs: rhs_l.s.clone(),
+                lhs: lhs_l.shape.clone(),
+                rhs: rhs_l.shape.clone(),
                 op: "matmul",
             });
         }
@@ -892,16 +892,22 @@ impl Map2 for MatMul {
                 }
             }
         }
+        let time2 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        println!("{} time:{} ms", Self::OP, time2 - time1);
         return Ok(());
 
         if self.can_use_gemm(lhs_l, rhs_l) {
+            // let rhs_l = rhs_l.clone().transpose(0, 1)?;
             let l_dim = lhs_l.shape();
             let r_dim: &[usize] = rhs_l.shape();
             let dim = l_dim.len();
             if dim < 2 || r_dim.len() != dim {
                 return Err(GError::ShapeMismatchBinaryOp {
-                    lhs: lhs_l.s.clone(),
-                    rhs: rhs_l.s.clone(),
+                    lhs: lhs_l.shape.clone(),
+                    rhs: rhs_l.shape.clone(),
                     op: "matmul",
                 });
             }
@@ -917,8 +923,8 @@ impl Map2 for MatMul {
             let batching_b: usize = r_dim[..dim - 2].iter().product();
             if k != k2 || batching != batching_b {
                 return Err(GError::ShapeMismatchBinaryOp {
-                    lhs: lhs_l.s.clone(),
-                    rhs: rhs_l.s.clone(),
+                    lhs: lhs_l.shape.clone(),
+                    rhs: rhs_l.shape.clone(),
                     op: "matmul",
                 });
             }
@@ -927,7 +933,7 @@ impl Map2 for MatMul {
                 lhs,
                 lhs_l,
                 &rhs_f16,
-                rhs_l,
+                &rhs_l,
                 &mut dst_f16,
                 (batching, m, n, k),
             )?;
@@ -1160,8 +1166,8 @@ mod tests {
     */
     #[test]
     fn test_matmul_f32() {
-        let a = mat(&[[1.0f32, 2.0], [3.0f32, 4.0]]);
-        let b = mat(&[[1.0f32, 2.0], [3.0f32, 5.0]]);
+        let a = mat(&[[1.0f32, 3.0, 5.0], [7.0f32, 9.0, 11.0]]);
+        let b = mat(&[[2.0f32, 4.0], [6.0f32, 8.0], [10.0f32, 12.0]]);
         println!("a{:?}", a.shape());
         println!("b{:?}", b.shape());
         // let ne = [
@@ -1208,18 +1214,45 @@ mod tests {
         //     // [f16::from_f32(5.0), f16::from_f32(6.0)],
         // ]);
 
+        /*
+         * 如果要计算
+         * a=[[1.0f32, 3.0, 5.0],
+         *  [7.0f32, 9.0, 11.0]] *
+         *
+         * b=[[2.0f32, 4.0],
+         * [6.0f32, 8.0],
+         * [10.0f32, 12.0]]
+         *
+         * b对进行转置 transpose 然后相乘
+         *
+         * 结果再transpose
+         *
+         */
         let mut m1 = Tensor::from_vec(
             vec![
                 f16::from_f32(1.0),
-                f16::from_f32(2.0),
                 f16::from_f32(3.0),
-                f16::from_f32(4.0),
+                f16::from_f32(5.0),
+                f16::from_f32(7.0),
+                f16::from_f32(9.0),
+                f16::from_f32(11.0),
             ],
             2,
-            Shape::from_array([2, 2]),
+            Shape::from_array([3, 2]),
         );
 
-        let mut m2 = Tensor::from_vec(vec![1.0f32, 3.0, 2.0, 5.0], 2, Shape::from_array([2, 2]));
+        // let mut m2 = Tensor::from_vec(
+        //     vec![2.0f32, 6.0, 10.0, 4.0, 8.0, 12.0],
+        //     2,
+        //     Shape::from_array([3, 2]),
+        // );
+
+        let mut m2 = Tensor::from_vec(
+            vec![2.0f32, 4.0, 6.0, 8.0, 10.0, 12.0],
+            2,
+            Shape::from_array([2, 3]),
+        );
+
         println!("m1:{:?}", m1);
         println!("m2:{:?}", m2);
 

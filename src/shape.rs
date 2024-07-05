@@ -27,13 +27,13 @@ pub fn compute_stride_offset(n: usize, stride: usize) -> isize {
 #[derive(Clone, Debug)]
 pub struct Dim {
     pub(crate) n_dims: usize,
-    pub(crate) s: Shape,
+    pub(crate) shape: Shape,
     pub(crate) stride: Layout,
 }
 
 impl Dim {
     pub fn shape(&self) -> &[usize] {
-        &self.s.as_slice()[..self.n_dims]
+        &self.shape.as_slice()[..self.n_dims]
     }
 
     pub fn ret_stride(&mut self, stride: Layout) {
@@ -55,7 +55,23 @@ impl Dim {
     }
 
     pub fn shape_mut(&mut self) -> &mut [usize] {
-        &mut self.s.as_slice_mut()[..self.n_dims]
+        &mut self.shape.as_slice_mut()[..self.n_dims]
+    }
+
+    pub fn shape_layout_mut(&mut self) -> &mut Layout {
+        self.shape.layout_mut()
+    }
+
+    pub fn shape_layout(&self) -> &Layout {
+        self.shape.layout()
+    }
+
+    pub fn stride_layout_mut(&mut self) -> &mut Layout {
+        &mut self.stride
+    }
+
+    pub fn stride_layout(&self) -> &Layout {
+        &self.stride
     }
 
     pub fn stride(&self) -> &[usize] {
@@ -79,19 +95,19 @@ impl Dim {
     }
 
     pub fn dim4(&self) -> (usize, usize, usize, usize) {
-        self.s.dims4()
+        self.shape.dims4()
     }
 
     pub fn dim3(&self) -> (usize, usize, usize) {
-        self.s.dims3()
+        self.shape.dims3()
     }
 
     pub fn dim2(&self) -> (usize, usize) {
-        self.s.dims2()
+        self.shape.dims2()
     }
 
     pub fn dim1(&self) -> usize {
-        self.s.dims1()
+        self.shape.dims1()
     }
 
     pub fn n_dims(&self) -> usize {
@@ -104,7 +120,7 @@ impl Dim {
     }
 
     pub(crate) fn elem_count(&self) -> usize {
-        self.s.elem_count()
+        self.shape.elem_count()
     }
 
     // pub fn broadcast_with(&self, s: &Shape) -> GResult<Dim> {
@@ -122,14 +138,14 @@ impl Dim {
         let dims = self.shape();
         if dim >= dims.len() {
             return Err(GError::DimOutOfRange {
-                shape: self.s.clone(),
+                shape: self.shape.clone(),
                 dim: dim,
                 op: "narrow",
             });
         }
         if start + len > dims[dim] {
             return Err(GError::NarrowInvalidArgs {
-                shape: self.s.clone(),
+                shape: self.shape.clone(),
                 dim,
                 start,
                 len,
@@ -140,18 +156,18 @@ impl Dim {
         dims[dim] = len;
         Ok(Self {
             n_dims: dims.len(),
-            s: Shape::from_vec(dims),
+            shape: Shape::from_vec(dims),
             stride: self.stride.clone(),
         })
     }
 
     pub fn transpose(&mut self, d1: usize, d2: usize) -> GResult<Dim> {
-        let rank = self.s.size();
+        let rank = self.shape.size();
         if rank <= d1 || rank <= d2 {
             return Err(GError::UnexpectedNumberOfDims {
                 expected: usize::max(d1, d1),
                 got: rank,
-                shape: self.s.clone(),
+                shape: self.shape.clone(),
             });
         }
         let mut stride = self.stride.clone();
@@ -160,7 +176,7 @@ impl Dim {
         stride.swap(d1, d2);
         Ok(Self {
             n_dims: dims.len(),
-            s: Shape::from_slice(dims),
+            shape: Shape::from_slice(dims),
             stride: stride,
         })
     }
@@ -184,9 +200,9 @@ impl Dim {
     //内存是否连续
     pub fn ggml_is_contiguous(&self) -> bool {
         return self.stride[0] == 1
-            && self.stride[1] == self.stride[0] * self.s.layout()[0]
-            && self.stride[2] == self.stride[1] * self.s.layout()[1]
-            && self.stride[3] == self.stride[2] * self.s.layout()[2];
+            && self.stride[1] == self.stride[0] * self.shape.layout()[0]
+            && self.stride[2] == self.stride[1] * self.shape.layout()[1]
+            && self.stride[3] == self.stride[2] * self.shape.layout()[2];
     }
 
     pub(crate) fn strided_blocks(&self) -> crate::StridedBlocks {
@@ -246,6 +262,10 @@ impl Shape {
         &self.0
     }
 
+    pub fn layout_mut(&mut self) -> &mut Layout {
+        &mut self.0
+    }
+
     pub fn from_array<const N: usize>(v: [usize; N]) -> Shape {
         Shape::from_vec(v.to_vec())
     }
@@ -283,7 +303,6 @@ impl Shape {
     }
 
     pub(crate) fn stride_contiguous(&self) -> Layout {
-        return [1, 2, 1, 1];
         // let mut stride: Vec<_> = self
         //     .0
         //     .iter()
@@ -515,7 +534,7 @@ mod tests {
 
         let dim = Dim {
             n_dims: 2,
-            s: d,
+            shape: d,
             stride: Layout::default(),
         };
         println!("nd strides:{:?}", dim.nd_stride());
