@@ -1589,7 +1589,7 @@ impl Tensor {
         assert!(axis2 != axis3);
 
         let shape = self.shape_layout();
-        let stride = self.stride();
+        let stride = self.stride_layout();
 
         let mut ne = Layout::default();
         let mut nb = Layout::default();

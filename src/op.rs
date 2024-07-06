@@ -286,6 +286,10 @@ impl Map for Gelu {
         });
         Ok(())
     }
+
+    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+        Ok(())
+    }
 }
 
 struct Conv1D1S;
@@ -604,6 +608,10 @@ impl Map for Repeat {
     fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
         self.f(inp, inp_d, dst, dst_d)
     }
+
+    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+        Ok(())
+    }
 }
 
 struct Norm;
@@ -676,6 +684,10 @@ impl Map for Norm {
             .unwrap()
             .as_millis();
         println!("{} time:{} ms", Self::OP, time2 - time1);
+        Ok(())
+    }
+
+    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
         Ok(())
     }
 }
@@ -953,6 +965,44 @@ impl Map2 for MatMul {
     }
 }
 
+struct Cpy;
+
+impl Map for Cpy {
+    const OP: &'static str = "repeat";
+    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
+        Ok(())
+    }
+
+    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+        self.f(inp, inp_d, dst, dst_d)
+    }
+
+    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+        let mut id: usize = 0;
+        // ggml_fp16_t *dst_ptr = (ggml_fp16_t *)dst->data;
+
+        let (ne00, ne01, ne02, ne03) = inp_d.dim4();
+        let (nb00, nb01, nb02, nb03) = inp_d.stride_4d();
+
+        // dst.iter_mut()
+        //     .zip(inp.iter())
+        //     .for_each(|(d, a)| *d = f16::from_f32(*a));
+
+        for i03 in 0..ne03 {
+            for i02 in 0..ne02 {
+                for i01 in 0..ne01 {
+                    for i00 in 0..ne00 {
+                        let src0_ptr = inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
+                        dst[id] = f16::from_f32(src0_ptr);
+                        id = id + 1;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 trait Map2 {
     const OP: &'static str;
     fn f<T: TensorType>(
@@ -1121,11 +1171,26 @@ pub fn galois_norm(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
+pub fn galois_cpy(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(d)) => {
+            Cpy.map(s, src.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
 trait Map {
     const OP: &'static str;
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()>;
 
     fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()>;
+
+    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()>;
 
     fn map(&self, dev1: &CpuDevice, d1: &Dim, dst: &mut CpuDevice, d3: &Dim) -> GResult<()> {
         match (dev1, dst) {
@@ -1134,6 +1199,9 @@ trait Map {
             }
             (CpuDevice::F32(v1), CpuDevice::F32(d)) => {
                 self.f_f32(v1.as_slice(), d1, d.as_slice_mut(), d3)
+            }
+            (CpuDevice::F32(v1), CpuDevice::F16(d)) => {
+                self.f_f32_f16(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
             _ => {
                 todo!()
