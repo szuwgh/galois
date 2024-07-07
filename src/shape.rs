@@ -183,6 +183,14 @@ impl Dim {
 
     //内存是否连续
     pub fn is_contiguous(&self) -> bool {
+        // let (nb0, nb1, nb2, nb3) = self.stride_4d();
+        // let (ne0, ne1, ne2, ne3) = self.dim4();
+        // return nb0 == 1 && nb1 == nb0 * ne0 && nb2 == nb1 * ne1 && nb3 == nb2 * ne2;
+
+        // tensor->nb[0] == GGML_TYPE_SIZE[tensor->type] &&
+        // tensor->nb[1] == tensor->nb[0]*tensor->ne[0] &&
+        // tensor->nb[2] == tensor->nb[1]*tensor->ne[1] &&
+        // tensor->nb[3] == tensor->nb[2]*tensor->ne[2];
         let stride = self.stride();
         if self.shape().len() != stride.len() {
             return false;

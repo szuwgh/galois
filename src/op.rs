@@ -978,6 +978,8 @@ impl Map for Cpy {
     }
 
     fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+        assert_eq!(inp_d.elem_count(), dst_d.elem_count());
+
         let mut id: usize = 0;
         // ggml_fp16_t *dst_ptr = (ggml_fp16_t *)dst->data;
 

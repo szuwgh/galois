@@ -1353,6 +1353,10 @@ impl Tensor {
         self.dim.is_contiguous()
     }
 
+    pub fn ggml_is_contiguous(&self) -> bool {
+        self.dim.ggml_is_contiguous()
+    }
+
     // pub fn sqrt(&self) -> Self {
     //     match &self.data {
     //         Device::Cpu(d) => {
