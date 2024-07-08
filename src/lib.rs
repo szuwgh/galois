@@ -233,7 +233,7 @@ pub trait TensorType:
         );
         let t1 = _mm_hadd_ps(t0, t0);
         sumf = _mm_cvtss_f32(_mm_hadd_ps(t1, t1));
-
+        // leftovers
         for i in np..k {
             sumf += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
         }

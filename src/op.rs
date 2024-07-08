@@ -227,7 +227,7 @@ impl Map2 for Mul {
         let time1 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_micros();
+            .as_millis();
         // let n = inp1_d.nrows();
         // let nc = inp1_d.dim1();
 
@@ -264,8 +264,8 @@ impl Map2 for Mul {
         let time2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_micros();
-        println!("{} time:{} us", Self::OP, time2 - time1);
+            .as_millis();
+        println!("{} time:{} ms", Self::OP, time2 - time1);
         Ok(())
     }
 }
@@ -911,57 +911,57 @@ impl Map2 for MatMul {
         println!("{} time:{} ms", Self::OP, time2 - time1);
         return Ok(());
 
-        if self.can_use_gemm(lhs_l, rhs_l) {
-            // let rhs_l = rhs_l.clone().transpose(0, 1)?;
-            let l_dim = lhs_l.shape();
-            let r_dim: &[usize] = rhs_l.shape();
-            let dim = l_dim.len();
-            if dim < 2 || r_dim.len() != dim {
-                return Err(GError::ShapeMismatchBinaryOp {
-                    lhs: lhs_l.shape.clone(),
-                    rhs: rhs_l.shape.clone(),
-                    op: "matmul",
-                });
-            }
-            let m = l_dim[dim - 2];
-            let k = l_dim[dim - 1];
-            let k2 = r_dim[dim - 2];
-            let n = r_dim[dim - 1];
-            // let mut c_dim = l_dim[..dim - 2].to_vec();
-            // c_dim.extend(&[m, n]);
-            // let c_n_dims = c_dim.len();
-            // let c_shape = Shape::from_vec(c_dim);
-            let batching: usize = l_dim[..dim - 2].iter().product();
-            let batching_b: usize = r_dim[..dim - 2].iter().product();
-            if k != k2 || batching != batching_b {
-                return Err(GError::ShapeMismatchBinaryOp {
-                    lhs: lhs_l.shape.clone(),
-                    rhs: rhs_l.shape.clone(),
-                    op: "matmul",
-                });
-            }
-            let mut dst_f16 = vec![f16::zero(); batching * m * n];
-            self.compute_mul_mat_use_gemm(
-                lhs,
-                lhs_l,
-                &rhs_f16,
-                &rhs_l,
-                &mut dst_f16,
-                (batching, m, n, k),
-            )?;
-            dst.par_iter_mut()
-                .zip(dst_f16.par_iter())
-                .for_each(|(d, s)| *d = s.to_f32());
-        } else {
-            println!("not use gemm");
-        }
+        // if self.can_use_gemm(lhs_l, rhs_l) {
+        //     // let rhs_l = rhs_l.clone().transpose(0, 1)?;
+        //     let l_dim = lhs_l.shape();
+        //     let r_dim: &[usize] = rhs_l.shape();
+        //     let dim = l_dim.len();
+        //     if dim < 2 || r_dim.len() != dim {
+        //         return Err(GError::ShapeMismatchBinaryOp {
+        //             lhs: lhs_l.shape.clone(),
+        //             rhs: rhs_l.shape.clone(),
+        //             op: "matmul",
+        //         });
+        //     }
+        //     let m = l_dim[dim - 2];
+        //     let k = l_dim[dim - 1];
+        //     let k2 = r_dim[dim - 2];
+        //     let n = r_dim[dim - 1];
+        //     // let mut c_dim = l_dim[..dim - 2].to_vec();
+        //     // c_dim.extend(&[m, n]);
+        //     // let c_n_dims = c_dim.len();
+        //     // let c_shape = Shape::from_vec(c_dim);
+        //     let batching: usize = l_dim[..dim - 2].iter().product();
+        //     let batching_b: usize = r_dim[..dim - 2].iter().product();
+        //     if k != k2 || batching != batching_b {
+        //         return Err(GError::ShapeMismatchBinaryOp {
+        //             lhs: lhs_l.shape.clone(),
+        //             rhs: rhs_l.shape.clone(),
+        //             op: "matmul",
+        //         });
+        //     }
+        //     let mut dst_f16 = vec![f16::zero(); batching * m * n];
+        //     self.compute_mul_mat_use_gemm(
+        //         lhs,
+        //         lhs_l,
+        //         &rhs_f16,
+        //         &rhs_l,
+        //         &mut dst_f16,
+        //         (batching, m, n, k),
+        //     )?;
+        //     dst.par_iter_mut()
+        //         .zip(dst_f16.par_iter())
+        //         .for_each(|(d, s)| *d = s.to_f32());
+        // } else {
+        //     println!("not use gemm");
+        // }
 
-        let time2 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        println!("{} time:{} ms", Self::OP, time2 - time1);
-        Ok(())
+        // let time2 = SystemTime::now()
+        //     .duration_since(UNIX_EPOCH)
+        //     .unwrap()
+        //     .as_millis();
+        // println!("{} time:{} ms", Self::OP, time2 - time1);
+        // Ok(())
     }
 }
 
@@ -980,92 +980,118 @@ impl Map for Cpy {
     fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
         assert_eq!(inp_d.elem_count(), dst_d.elem_count());
 
-        let mut id: usize = 0;
-        // ggml_fp16_t *dst_ptr = (ggml_fp16_t *)dst->data;
+        // let mut id: usize = 0;
+        // // ggml_fp16_t *dst_ptr = (ggml_fp16_t *)dst->data;
 
-        let (ne00, ne01, ne02, ne03) = inp_d.dim4();
-        let (nb00, nb01, nb02, nb03) = inp_d.stride_4d();
+        // let (ne00, ne01, ne02, ne03) = inp_d.dim4();
+        // let (nb00, nb01, nb02, nb03) = inp_d.stride_4d();
 
-        // dst.iter_mut()
-        //     .zip(inp.iter())
-        //     .for_each(|(d, a)| *d = f16::from_f32(*a));
+        dst.par_iter_mut()
+            .zip(inp.par_iter())
+            .for_each(|(d, a)| *d = f16::from_f32(*a));
 
-        for i03 in 0..ne03 {
-            for i02 in 0..ne02 {
-                for i01 in 0..ne01 {
-                    for i00 in 0..ne00 {
-                        let src0_ptr = inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
-                        dst[id] = f16::from_f32(src0_ptr);
-                        id = id + 1;
-                    }
-                }
-            }
-        }
+        // for i03 in 0..ne03 {
+        //     for i02 in 0..ne02 {
+        //         for i01 in 0..ne01 {
+        //             for i00 in 0..ne00 {
+        //                 let src0_ptr = inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
+        //                 dst[id] = f16::from_f32(src0_ptr);
+        //                 id = id + 1;
+        //             }
+        //         }
+        //     }
+        // }
         Ok(())
     }
 }
 
-trait Map2 {
-    const OP: &'static str;
-    fn f<T: TensorType>(
-        &self,
-        inp: &[T],
-        inp_d: &Dim,
-        k: &[T],
-        k_d: &Dim,
-        dst: &mut [T],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+struct FlashAttn;
 
-    fn f_f32(
+impl Map4 for FlashAttn {
+    const OP: &'static str = "flashattn";
+    fn f_f16_f16_f16_f32(
         &self,
-        inp: &[f32],
-        inp_d: &Dim,
-        k: &[f32],
-        k_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        self.f(inp, inp_d, k, k_d, dst, dst_d)
-    }
-
-    fn f_f16_f32(
-        &self,
+        q: &[f16],
+        q_d: &Dim,
         k: &[f16],
         k_d: &Dim,
-        inp: &[f32],
-        inp_d: &Dim,
+        v: &[f16],
+        v_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
-        todo!()
-    }
 
-    fn map(
-        &self,
-        dev1: &CpuDevice,
-        d1: &Dim,
-        dev2: &CpuDevice,
-        d2: &Dim,
-        dst: &mut CpuDevice,
-        d3: &Dim,
-    ) -> GResult<()> {
-        match (dev1, dev2, dst) {
-            (CpuDevice::F16(v1), CpuDevice::F16(v2), CpuDevice::F16(d)) => {
-                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
-            }
-            (CpuDevice::F32(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
-                self.f_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
-            }
-            (CpuDevice::F16(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
-                self.f_f16_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
-            }
-            _ => {
-                todo!()
-            }
-        }
+        let (neq0,neq1,neq2,neq3) = q_d.dim4();
+        // const int neq0 = q->ne[0];
+        // const int neq1 = q->ne[1];
+        // const int neq2 = q->ne[2];
+        // const int neq3 = q->ne[3];
+    
+        const int nek0 = k->ne[0];
+        const int nek1 = k->ne[1];
+        // const int nek2 = k->ne[2];
+        // const int nek3 = k->ne[3];
+    
+        // const int nev0 = v->ne[0];
+        const int nev1 = v->ne[1];
+        // const int nev2 = v->ne[2];
+        // const int nev3 = v->ne[3];
+    
+        const int ne0 = dst->ne[0];
+        const int ne1 = dst->ne[1];
+        // const int ne2  = dst->ne[2];
+        // const int ne3  = dst->ne[3];
+    
+        const int nbk0 = k->nb[0];
+        const int nbk1 = k->nb[1];
+        const int nbk2 = k->nb[2];
+        const int nbk3 = k->nb[3];
+    
+        const int nbq0 = q->nb[0];
+        const int nbq1 = q->nb[1];
+        const int nbq2 = q->nb[2];
+        const int nbq3 = q->nb[3];
+    
+        const int nbv0 = v->nb[0];
+        const int nbv1 = v->nb[1];
+        const int nbv2 = v->nb[2];
+        const int nbv3 = v->nb[3];
+    
+        const int nb0 = dst->nb[0];
+        const int nb1 = dst->nb[1];
+        const int nb2 = dst->nb[2];
+        const int nb3 = dst->nb[3];
+    
+        const int ith = params->ith;
+        const int nth = params->nth;
+    
+        const int D = neq0;
+        const int N = neq1;
+        const int P = nek1 - N;
+        const int M = P + N;
+    
+        GGML_ASSERT(ne0 == D);
+        GGML_ASSERT(ne1 == N);
+        GGML_ASSERT(P >= 0);
+    
+        GGML_ASSERT(nbq0 == sizeof(ggml_fp16_t));
+        GGML_ASSERT(nbk0 == sizeof(ggml_fp16_t));
+        GGML_ASSERT(nbv0 == sizeof(ggml_fp16_t));
+    
+        GGML_ASSERT(neq0 == D);
+        GGML_ASSERT(nek0 == D);
+        GGML_ASSERT(nev1 == D);
+    
+        GGML_ASSERT(neq1 == N);
+        GGML_ASSERT(nek1 == N + P);
+        GGML_ASSERT(nev1 == D);
+    
+        // dst cannot be transposed or permuted
+        GGML_ASSERT(nb0 == sizeof(float));
+        GGML_ASSERT(nb0 <= nb1);
+        GGML_ASSERT(nb1 <= nb2);
+        GGML_ASSERT(nb2 <= nb3);
+        Ok(())
     }
 }
 
@@ -1205,6 +1231,117 @@ trait Map {
             (CpuDevice::F32(v1), CpuDevice::F16(d)) => {
                 self.f_f32_f16(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
+            _ => {
+                todo!()
+            }
+        }
+    }
+}
+
+trait Map2 {
+    const OP: &'static str;
+    fn f<T: TensorType>(
+        &self,
+        inp: &[T],
+        inp_d: &Dim,
+        k: &[T],
+        k_d: &Dim,
+        dst: &mut [T],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_f32(
+        &self,
+        inp: &[f32],
+        inp_d: &Dim,
+        k: &[f32],
+        k_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        self.f(inp, inp_d, k, k_d, dst, dst_d)
+    }
+
+    fn f_f16_f32(
+        &self,
+        k: &[f16],
+        k_d: &Dim,
+        inp: &[f32],
+        inp_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn map(
+        &self,
+        dev1: &CpuDevice,
+        d1: &Dim,
+        dev2: &CpuDevice,
+        d2: &Dim,
+        dst: &mut CpuDevice,
+        d3: &Dim,
+    ) -> GResult<()> {
+        match (dev1, dev2, dst) {
+            (CpuDevice::F16(v1), CpuDevice::F16(v2), CpuDevice::F16(d)) => {
+                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+            }
+            (CpuDevice::F32(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+                self.f_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+            }
+            (CpuDevice::F16(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+                self.f_f16_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+            }
+            _ => {
+                todo!()
+            }
+        }
+    }
+}
+
+trait Map4 {
+    const OP: &'static str;
+
+    fn f_f16_f16_f16_f32(
+        &self,
+        inp1: &[f16],
+        inp1_d: &Dim,
+        inp2: &[f16],
+        inp2_d: &Dim,
+        inp3: &[f16],
+        inp3_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn map(
+        &self,
+        dev1: &CpuDevice,
+        d1: &Dim,
+        dev2: &CpuDevice,
+        d2: &Dim,
+        dev3: &CpuDevice,
+        d3: &Dim,
+        dst: &mut CpuDevice,
+        d4: &Dim,
+    ) -> GResult<()> {
+        match (dev1, dev2, dev3, dst) {
+            (CpuDevice::F16(v1), CpuDevice::F16(v2), CpuDevice::F16(v3), CpuDevice::F32(d)) => self
+                .f_f16_f16_f16_f32(
+                    v1.as_slice(),
+                    d1,
+                    v2.as_slice(),
+                    d2,
+                    v3.as_slice(),
+                    d3,
+                    d.as_slice_mut(),
+                    d4,
+                ),
             _ => {
                 todo!()
             }
