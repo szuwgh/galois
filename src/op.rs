@@ -10,6 +10,10 @@ use crate::Dim;
 use crate::Shape;
 use crate::Tensor;
 use crate::TensorType;
+#[cfg(target_arch = "x86")]
+use core::arch::x86::*;
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
 use core::cell::OnceCell;
 use core::simd::f32x32;
 use gemm::f16;
@@ -17,13 +21,17 @@ use gemm::gemm;
 use gemm::Parallelism;
 use lazy_static::lazy_static;
 use num_traits::Float;
-use num_traits::One;
-use num_traits::Zero;
 use rayon::prelude::*;
 use std::simd::num::SimdFloat;
 
 const COEF_A: f32 = 0.044715;
 const SQRT_2_OVER_PI: f64 = 0.797_884_560_802_865_4;
+const CACHE_LINE_SIZE: usize = 64;
+const CACHE_LINE_SIZE_F32: usize = CACHE_LINE_SIZE / std::mem::size_of::<f32>();
+
+const STEP: usize = 32;
+const EPR: usize = 8;
+const ARR: usize = STEP / EPR;
 
 lazy_static! {
     static ref GLOBAL_CPU_DEVICE_CACHE: CpuDeviceCache = CpuDeviceCache::new();
@@ -59,16 +67,61 @@ fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
     }
 }
 
+#[inline(always)]
+unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: usize) {
+    let mut sumf = 0.0f32;
+    let np = k & !(STEP - 1);
+
+    let mut sum = [_mm256_setzero_ps(); ARR];
+    let mut ax = [_mm256_setzero_ps(); ARR];
+    let mut ay = [_mm256_setzero_ps(); ARR];
+
+    for i in (0..np).step_by(STEP) {
+        for j in 0..ARR {
+            ax[j] = _mm256_cvtph_ps(_mm_loadu_si128(a_row.add(i + j * EPR) as *const __m128i));
+            ay[j] = _mm256_cvtph_ps(_mm_loadu_si128(b_row.add(i + j * EPR) as *const __m128i));
+
+            sum[j] = _mm256_add_ps(_mm256_mul_ps(ax[j], ay[j]), sum[j]);
+        }
+    }
+
+    let mut offset = ARR >> 1;
+    for i in 0..offset {
+        sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
+    }
+    offset >>= 1;
+    for i in 0..offset {
+        sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
+    }
+    offset >>= 1;
+    for i in 0..offset {
+        sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
+    }
+    let t0 = _mm_add_ps(
+        _mm256_castps256_ps128(sum[0]),
+        _mm256_extractf128_ps(sum[0], 1),
+    );
+    let t1 = _mm_hadd_ps(t0, t0);
+    sumf = _mm_cvtss_f32(_mm_hadd_ps(t1, t1));
+    // leftovers
+    for i in np..k {
+        sumf += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
+    }
+    *c = sumf;
+}
+
 unsafe impl Sync for CpuDeviceCache {}
 
 struct CpuDeviceCache {
     gelu_cache: OnceCell<Vec<f16>>,
+    exp_cache: OnceCell<Vec<f16>>,
 }
 
 impl CpuDeviceCache {
     fn new() -> CpuDeviceCache {
         CpuDeviceCache {
             gelu_cache: OnceCell::from(Self::init_gelu_cache()),
+            exp_cache: OnceCell::from(Self::init_exp_cache()),
         }
     }
 
@@ -76,11 +129,24 @@ impl CpuDeviceCache {
         self.gelu_cache.get().unwrap()
     }
 
+    fn get_exp_cache(&self) -> &Vec<f16> {
+        self.exp_cache.get().unwrap()
+    }
+
     fn init_gelu_cache() -> Vec<f16> {
         (0..1 << 16)
             .map(|x| {
                 let v = f16::from_bits(x as u16).to_f32();
                 f16::from_f32(compute_gelu(v))
+            })
+            .collect()
+    }
+
+    fn init_exp_cache() -> Vec<f16> {
+        (0..1 << 16)
+            .map(|x| {
+                let v = f16::from_bits(x as u16).to_f32();
+                f16::from_f32(v.exp())
             })
             .collect()
     }
@@ -1020,77 +1086,203 @@ impl Map4 for FlashAttn {
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
+        let (neq0, neq1, neq2, neq3) = q_d.dim4();
+        let (nek0, nek1) = k_d.dim2();
 
-        let (neq0,neq1,neq2,neq3) = q_d.dim4();
         // const int neq0 = q->ne[0];
         // const int neq1 = q->ne[1];
         // const int neq2 = q->ne[2];
         // const int neq3 = q->ne[3];
-    
-        const int nek0 = k->ne[0];
-        const int nek1 = k->ne[1];
+
         // const int nek2 = k->ne[2];
         // const int nek3 = k->ne[3];
-    
+
         // const int nev0 = v->ne[0];
-        const int nev1 = v->ne[1];
+        //const int nev1 = v->ne[1];
+
+        let nev1 = v_d.dim1();
         // const int nev2 = v->ne[2];
         // const int nev3 = v->ne[3];
-    
-        const int ne0 = dst->ne[0];
-        const int ne1 = dst->ne[1];
+
+        let (ne0, ne1) = dst_d.dim2();
+
+        // const int ne0 = dst->ne[0];
+        // const int ne1 = dst->ne[1];
         // const int ne2  = dst->ne[2];
         // const int ne3  = dst->ne[3];
-    
-        const int nbk0 = k->nb[0];
-        const int nbk1 = k->nb[1];
-        const int nbk2 = k->nb[2];
-        const int nbk3 = k->nb[3];
-    
-        const int nbq0 = q->nb[0];
-        const int nbq1 = q->nb[1];
-        const int nbq2 = q->nb[2];
-        const int nbq3 = q->nb[3];
-    
-        const int nbv0 = v->nb[0];
-        const int nbv1 = v->nb[1];
-        const int nbv2 = v->nb[2];
-        const int nbv3 = v->nb[3];
-    
-        const int nb0 = dst->nb[0];
-        const int nb1 = dst->nb[1];
-        const int nb2 = dst->nb[2];
-        const int nb3 = dst->nb[3];
-    
-        const int ith = params->ith;
-        const int nth = params->nth;
-    
-        const int D = neq0;
-        const int N = neq1;
-        const int P = nek1 - N;
-        const int M = P + N;
-    
-        GGML_ASSERT(ne0 == D);
-        GGML_ASSERT(ne1 == N);
-        GGML_ASSERT(P >= 0);
-    
-        GGML_ASSERT(nbq0 == sizeof(ggml_fp16_t));
-        GGML_ASSERT(nbk0 == sizeof(ggml_fp16_t));
-        GGML_ASSERT(nbv0 == sizeof(ggml_fp16_t));
-    
-        GGML_ASSERT(neq0 == D);
-        GGML_ASSERT(nek0 == D);
-        GGML_ASSERT(nev1 == D);
-    
-        GGML_ASSERT(neq1 == N);
-        GGML_ASSERT(nek1 == N + P);
-        GGML_ASSERT(nev1 == D);
-    
+
+        let (nbk0, nbk1, nbk2, nbk3) = k_d.stride_4d();
+        let (nbq0, nbq1, nbq2, nbq3) = q_d.stride_4d();
+        let (nbv0, nbv1, nbv2, nbv3) = v_d.stride_4d();
+        let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+        // const int nbk0 = k->nb[0];
+        // const int nbk1 = k->nb[1];
+        // const int nbk2 = k->nb[2];
+        // const int nbk3 = k->nb[3];
+
+        // const int nbq0 = q->nb[0];
+        // const int nbq1 = q->nb[1];
+        // const int nbq2 = q->nb[2];
+        // const int nbq3 = q->nb[3];
+
+        // const int nbv0 = v->nb[0];
+        // const int nbv1 = v->nb[1];
+        // const int nbv2 = v->nb[2];
+        // const int nbv3 = v->nb[3];
+
+        // const int nb0 = dst->nb[0];
+        // const int nb1 = dst->nb[1];
+        // const int nb2 = dst->nb[2];
+        // const int nb3 = dst->nb[3];
+
+        let ith = 0;
+        let nth = 1;
+
+        let D = neq0;
+        let N = neq1;
+        let P = nek1 - N;
+        let M = P + N;
+
+        assert!(ne0 == D);
+        assert!(ne1 == N);
+        assert!(P >= 0);
+
+        assert!(nbq0 == 1);
+        assert!(nbk0 == 1);
+        assert!(nbv0 == 1);
+
+        assert!(neq0 == D);
+        assert!(nek0 == D);
+        assert!(nev1 == D);
+
+        assert!(neq1 == N);
+        assert!(nek1 == N + P);
+        assert!(nev1 == D);
+
         // dst cannot be transposed or permuted
-        GGML_ASSERT(nb0 == sizeof(float));
-        GGML_ASSERT(nb0 <= nb1);
-        GGML_ASSERT(nb1 <= nb2);
-        GGML_ASSERT(nb2 <= nb3);
+        assert!(nb0 == 1);
+        assert!(nb0 <= nb1);
+        assert!(nb1 <= nb2);
+        assert!(nb2 <= nb3);
+
+        let nr = neq1 * neq2 * neq3;
+
+        // rows per thread
+        let dr = (nr + nth - 1) / nth;
+
+        // row range for this thread
+        let ir0 = dr * ith;
+        let ir1 = std::cmp::min(ir0 + dr, nr);
+
+        let scale = 1.0 / (D as f32).sqrt();
+
+        //printf("P=%d N=%d D=%d ir0=%d ir1=%d scale = %f\n", P, N, D, ir0, ir1, scale);
+
+        let mut wdata = vec![
+            0u8;
+            ith * (2 * M + CACHE_LINE_SIZE_F32)
+                + M * std::mem::size_of::<f32>()
+                + M * std::mem::size_of::<f16>()
+        ];
+        for ir in 0..ir1 {
+            // q indices
+            let iq3 = ir / (neq2 * neq1);
+            let iq2 = (ir - iq3 * neq2 * neq1) / neq1;
+            let iq1 = (ir - iq3 * neq2 * neq1 - iq2 * neq1);
+
+            let Sf32 = unsafe {
+                std::slice::from_raw_parts_mut(
+                    wdata.as_ptr() as *mut f32,
+                    wdata.len() / std::mem::size_of::<f32>(),
+                )
+            };
+
+            let (S, S2) = Sf32.split_at_mut(ith * (2 * M + CACHE_LINE_SIZE_F32) + M);
+
+            // let S = &mut Sf32[ith * (2 * M + CACHE_LINE_SIZE_F32)..];
+
+            for ic in 0..nek1 {
+                // k indices
+                let ik3 = iq3;
+                let ik2 = iq2;
+                let ik1 = ic;
+
+                // S indices
+                let i1 = ik1;
+
+                unsafe {
+                    vec_dot_f16(
+                        k[ik1 * nbk1 + ik2 * nbk2 + ik3 * nbk3..].as_ptr(),
+                        q[iq1 * nbq1 + iq2 * nbq2 + iq3 * nbq3..].as_ptr(),
+                        S[i1..].as_mut_ptr(),
+                        neq0,
+                    )
+                };
+            }
+
+            // scale
+            vec_scale_f32(nek1, S, scale);
+
+            if (true) {
+                for i in P..M {
+                    if (i > P + iq1) {
+                        S[i] = -std::f32::INFINITY;
+                    }
+                }
+            }
+
+            // softmax
+            {
+                let mut max = -std::f32::INFINITY;
+                for i in 0..M {
+                    max = f32::max(max, S[i]);
+                }
+
+                let mut sum: f32 = 0.0;
+
+                //  let ss: u16 = 0;
+                for i in 0..M {
+                    if (S[i] == -std::f32::INFINITY) {
+                        S[i] = 0.0;
+                    } else {
+                        //const float val = (S[i] == -INFINITY) ? 0.0 : exp(S[i] - max);
+                        let s = f16::from_f32(S[i] - max);
+                        let ss: u16 = unsafe { std::mem::transmute(s) };
+                        let val = GLOBAL_CPU_DEVICE_CACHE.get_exp_cache()[ss as usize].to_f32();
+                        sum += val;
+                        S[i] = val;
+                    }
+                }
+
+                assert!(sum > 0.0f32);
+
+                sum = 1.0 / sum;
+                vec_scale_f32(M, S, sum);
+            }
+
+            let S16 = unsafe { std::slice::from_raw_parts_mut(S2.as_ptr() as *mut f16, M) };
+
+            for i in 0..M {
+                S16[i] = f16::from_f32(S[i]);
+            }
+
+            for ic in 0..nev1 {
+                // dst indices
+                let i1 = iq1;
+                let i2 = iq2;
+                let i3 = iq3;
+
+                unsafe {
+                    vec_dot_f16(
+                        v[ic * nbv1 + i2 * nbv2 + i3 * nbv3..].as_ptr(),
+                        S16.as_ptr(),
+                        dst[ic * nb0 + i1 * nb1 + i2 * nb2 + i3 * nb3..].as_mut_ptr(),
+                        nek1,
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 }
