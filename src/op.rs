@@ -1048,32 +1048,44 @@ impl Map for Cpy {
             return Ok(());
         }
 
+        let (ne00, ne01, ne02, ne03) = inp_d.dim4();
+        let (nb00, nb01, nb02, nb03) = inp_d.stride_4d();
+        // const int ne01 = src0->ne[1];
+        // const int ne02 = src0->ne[2];
+        // const int ne03 = src0->ne[3];
 
-      let (ne00 ,ne01,)= src0->ne[0];
-        const int ne01 = src0->ne[1];
-        const int ne02 = src0->ne[2];
-        const int ne03 = src0->ne[3];
-    
-        const size_t nb00 = src0->nb[0];
-        const size_t nb01 = src0->nb[1];
-        const size_t nb02 = src0->nb[2];
-        const size_t nb03 = src0->nb[3];
+        // const size_t nb00 = src0->nb[0];
+        // const size_t nb01 = src0->nb[1];
+        // const size_t nb02 = src0->nb[2];
+        // const size_t nb03 = src0->nb[3];
         if inp_d.stride()[0] == 1 {
-           let id = 0;
-           let rs = ne00 * nb00;
+            let mut id = 0;
+            let rs = ne00 * nb00;
 
-            for  i03 in 0..ne03
-            {
-                for (int i02 = 0; i02 < ne02; i02++)
-                {
-                    for (int i01 = 0; i01 < ne01; i01++)
-                    {
-                        const char *src0_ptr = (char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03;
-                        char *dst_ptr = (char *)dst->data + id * rs;
+            for i03 in 0..ne03 {
+                for i02 in 0..ne02 {
+                    for i01 in 0..ne01 {
+                        let src0_ptr = &inp[i01 * nb01 + i02 * nb02 + i03 * nb03..];
+                        let dst_ptr = &mut dst[id * rs..];
 
-                        memcpy(dst_ptr, src0_ptr, rs);
+                        dst_ptr.clone_from_slice(&src0_ptr[..rs]);
+                        id += 1;
+                    }
+                }
+            }
+        } else {
+            let id = 0;
+           // float * dst_ptr = (float *) dst->data;
 
-                        id++;
+            for  i03  in 0..ne03 {
+                for  i02  in 0..ne02 {
+                    for  i01 in 0..ne01 {
+                        for  i00  in  0..ne00 {
+                            const float * src0_ptr = (float *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+
+                            dst_ptr[id] = *src0_ptr;
+                            id++;
+                        }
                     }
                 }
             }
