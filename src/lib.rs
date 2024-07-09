@@ -176,7 +176,7 @@ pub trait TensorType:
     + ToUsize
     + FromF32
     + FromF64
-    + UnaryOp
+   // + UnaryOp
     + 'static
 {
     const DTYPE: DType;
@@ -951,25 +951,25 @@ impl CpuDevice {
         }
     }
 
-    pub(crate) fn sqrt(&self) -> Self {
-        match self {
-            CpuDevice::F16(l) => {
-                let v: Vec<f16> = l.as_slice().iter().map(|x| x._sqrt()).collect();
-                let data = RawPtr::from_raw_parts(v.as_ptr() as *mut f16, v.len(), v.capacity());
-                CpuDevice::F16(RawData::Own(data))
-            }
-            CpuDevice::F32(l) => {
-                let v: Vec<f32> = l.as_slice().iter().map(|x| x._sqrt()).collect();
-                let data = RawPtr::from_raw_parts(v.as_ptr() as *mut f16, v.len(), v.capacity());
-                CpuDevice::F16(RawData::Own(data))
-            }
-            CpuDevice::F64(l) => {
-                let v: Vec<f64> = l.as_slice().iter().map(|x| x._sqrt()).collect();
-                let data = RawPtr::from_raw_parts(v.as_ptr() as *mut f16, v.len(), v.capacity());
-                CpuDevice::F16(RawData::Own(data))
-            }
-        }
-    }
+    // pub(crate) fn sqrt(&self) -> Self {
+    //     match self {
+    //         CpuDevice::F16(l) => {
+    //             let v: Vec<f16> = l.as_slice().iter().map(|x| x._sqrt()).collect();
+    //             let data = RawPtr::from_raw_parts(v.as_ptr() as *mut f16, v.len(), v.capacity());
+    //             CpuDevice::F16(RawData::Own(data))
+    //         }
+    //         CpuDevice::F32(l) => {
+    //             let v: Vec<f32> = l.as_slice().iter().map(|x| x._sqrt()).collect();
+    //             let data = RawPtr::from_raw_parts(v.as_ptr() as *mut f16, v.len(), v.capacity());
+    //             CpuDevice::F16(RawData::Own(data))
+    //         }
+    //         CpuDevice::F64(l) => {
+    //             let v: Vec<f64> = l.as_slice().iter().map(|x| x._sqrt()).collect();
+    //             let data = RawPtr::from_raw_parts(v.as_ptr() as *mut f16, v.len(), v.capacity());
+    //             CpuDevice::F16(RawData::Own(data))
+    //         }
+    //     }
+    // }
 }
 
 #[derive(Clone)]

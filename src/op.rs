@@ -20,7 +20,6 @@ use gemm::f16;
 use gemm::gemm;
 use gemm::Parallelism;
 use lazy_static::lazy_static;
-use num_traits::Float;
 use rayon::prelude::*;
 use std::simd::num::SimdFloat;
 
@@ -69,6 +68,11 @@ fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
 
 #[inline(always)]
 unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: usize) {
+    // *c = 0.0f32;
+    // for i in 0..k {
+    //     *c += ((*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32());
+    // }
+
     let mut sumf = 0.0f32;
     let np = k & !(STEP - 1);
 
@@ -125,12 +129,12 @@ impl CpuDeviceCache {
         }
     }
 
-    fn get_gelu_cache(&self) -> &Vec<f16> {
-        self.gelu_cache.get().unwrap()
+    fn get_gelu_cache(&self, i: usize) -> f16 {
+        self.gelu_cache.get().unwrap()[i]
     }
 
-    fn get_exp_cache(&self) -> &Vec<f16> {
-        self.exp_cache.get().unwrap()
+    fn get_exp_cache(&self, i: usize) -> f16 {
+        self.exp_cache.get().unwrap()[i]
     }
 
     fn init_gelu_cache() -> Vec<f16> {
@@ -347,7 +351,8 @@ impl Map for Gelu {
     fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
         assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
         dst.par_iter_mut().zip(inp.par_iter()).for_each(|(d, a)| {
-            *d = GLOBAL_CPU_DEVICE_CACHE.get_gelu_cache()[f16::from_f32(*a).to_bits() as usize]
+            *d = GLOBAL_CPU_DEVICE_CACHE
+                .get_gelu_cache(f16::from_f32(*a).to_bits() as usize)
                 .to_f32()
         });
         Ok(())
@@ -1034,8 +1039,46 @@ impl Map2 for MatMul {
 struct Cpy;
 
 impl Map for Cpy {
-    const OP: &'static str = "repeat";
+    const OP: &'static str = "copy";
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
+        assert!(dst_d.ggml_is_contiguous());
+        assert_eq!(inp_d.elem_count(), dst_d.elem_count());
+        if inp_d.ggml_is_contiguous() {
+            dst.copy_from_slice(inp);
+            return Ok(());
+        }
+
+
+      let (ne00 ,ne01,)= src0->ne[0];
+        const int ne01 = src0->ne[1];
+        const int ne02 = src0->ne[2];
+        const int ne03 = src0->ne[3];
+    
+        const size_t nb00 = src0->nb[0];
+        const size_t nb01 = src0->nb[1];
+        const size_t nb02 = src0->nb[2];
+        const size_t nb03 = src0->nb[3];
+        if inp_d.stride()[0] == 1 {
+           let id = 0;
+           let rs = ne00 * nb00;
+
+            for  i03 in 0..ne03
+            {
+                for (int i02 = 0; i02 < ne02; i02++)
+                {
+                    for (int i01 = 0; i01 < ne01; i01++)
+                    {
+                        const char *src0_ptr = (char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03;
+                        char *dst_ptr = (char *)dst->data + id * rs;
+
+                        memcpy(dst_ptr, src0_ptr, rs);
+
+                        id++;
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1044,29 +1087,30 @@ impl Map for Cpy {
     }
 
     fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+        assert!(dst_d.ggml_is_contiguous());
         assert_eq!(inp_d.elem_count(), dst_d.elem_count());
 
-        // let mut id: usize = 0;
-        // // ggml_fp16_t *dst_ptr = (ggml_fp16_t *)dst->data;
+        let mut id: usize = 0;
+        // ggml_fp16_t *dst_ptr = (ggml_fp16_t *)dst->data;
 
-        // let (ne00, ne01, ne02, ne03) = inp_d.dim4();
-        // let (nb00, nb01, nb02, nb03) = inp_d.stride_4d();
+        let (ne00, ne01, ne02, ne03) = inp_d.dim4();
+        let (nb00, nb01, nb02, nb03) = inp_d.stride_4d();
 
-        dst.par_iter_mut()
-            .zip(inp.par_iter())
-            .for_each(|(d, a)| *d = f16::from_f32(*a));
+        // dst.par_iter_mut()
+        //     .zip(inp.par_iter())
+        //     .for_each(|(d, a)| *d = f16::from_f32(*a));
 
-        // for i03 in 0..ne03 {
-        //     for i02 in 0..ne02 {
-        //         for i01 in 0..ne01 {
-        //             for i00 in 0..ne00 {
-        //                 let src0_ptr = inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
-        //                 dst[id] = f16::from_f32(src0_ptr);
-        //                 id = id + 1;
-        //             }
-        //         }
-        //     }
-        // }
+        for i03 in 0..ne03 {
+            for i02 in 0..ne02 {
+                for i01 in 0..ne01 {
+                    for i00 in 0..ne00 {
+                        let src0_ptr = inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
+                        dst[id] = f16::from_f32(src0_ptr);
+                        id = id + 1;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -1088,7 +1132,8 @@ impl Map4 for FlashAttn {
     ) -> GResult<()> {
         let (neq0, neq1, neq2, neq3) = q_d.dim4();
         let (nek0, nek1) = k_d.dim2();
-
+        println!("neq0, neq1, neq2, neq3:{},{},{},{}", neq0, neq1, neq2, neq3);
+        println!("nek0, nek1:{},{}", nek0, nek1);
         // const int neq0 = q->ne[0];
         // const int neq1 = q->ne[1];
         // const int neq2 = q->ne[2];
@@ -1100,7 +1145,7 @@ impl Map4 for FlashAttn {
         // const int nev0 = v->ne[0];
         //const int nev1 = v->ne[1];
 
-        let nev1 = v_d.dim1();
+        let (_, nev1) = v_d.dim2();
         // const int nev2 = v->ne[2];
         // const int nev3 = v->ne[3];
 
@@ -1115,6 +1160,11 @@ impl Map4 for FlashAttn {
         let (nbq0, nbq1, nbq2, nbq3) = q_d.stride_4d();
         let (nbv0, nbv1, nbv2, nbv3) = v_d.stride_4d();
         let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+
+        println!("nbk0, nbk1, nbk2, nbk3:{},{},{},{}", nbk0, nbk1, nbk2, nbk3);
+        println!("nbq0, nbq1, nbq2, nbq3:{},{},{},{}", nbq0, nbq1, nbq2, nbq3);
+        println!("nbv0, nbv1, nbv2, nbv3:{},{},{},{}", nbv0, nbv1, nbv2, nbv3);
+        println!("nb0, nb1, nb2, nb3:{},{},{},{}", nb0, nb1, nb2, nb3);
         // const int nbk0 = k->nb[0];
         // const int nbk1 = k->nb[1];
         // const int nbk2 = k->nb[2];
@@ -1174,21 +1224,21 @@ impl Map4 for FlashAttn {
         let ir0 = dr * ith;
         let ir1 = std::cmp::min(ir0 + dr, nr);
 
-        let scale = 1.0 / (D as f32).sqrt();
+        let scale = (1.0 / (D as f64).sqrt()) as f32;
 
         //printf("P=%d N=%d D=%d ir0=%d ir1=%d scale = %f\n", P, N, D, ir0, ir1, scale);
 
-        let mut wdata = vec![
+        let wdata = vec![
             0u8;
-            ith * (2 * M + CACHE_LINE_SIZE_F32)
-                + M * std::mem::size_of::<f32>()
+            M * std::mem::size_of::<f32>() //ith * (2 * M + CACHE_LINE_SIZE_F32)
                 + M * std::mem::size_of::<f16>()
         ];
-        for ir in 0..ir1 {
+
+        for ir in ir0..ir1 {
             // q indices
             let iq3 = ir / (neq2 * neq1);
             let iq2 = (ir - iq3 * neq2 * neq1) / neq1;
-            let iq1 = (ir - iq3 * neq2 * neq1 - iq2 * neq1);
+            let iq1 = ir - iq3 * neq2 * neq1 - iq2 * neq1;
 
             let Sf32 = unsafe {
                 std::slice::from_raw_parts_mut(
@@ -1197,7 +1247,7 @@ impl Map4 for FlashAttn {
                 )
             };
 
-            let (S, S2) = Sf32.split_at_mut(ith * (2 * M + CACHE_LINE_SIZE_F32) + M);
+            let (S, S2) = Sf32.split_at_mut(M); //ith * (2 * M + CACHE_LINE_SIZE_F32) +
 
             // let S = &mut Sf32[ith * (2 * M + CACHE_LINE_SIZE_F32)..];
 
@@ -1223,7 +1273,7 @@ impl Map4 for FlashAttn {
             // scale
             vec_scale_f32(nek1, S, scale);
 
-            if (true) {
+            if false {
                 for i in P..M {
                     if (i > P + iq1) {
                         S[i] = -std::f32::INFINITY;
@@ -1235,20 +1285,22 @@ impl Map4 for FlashAttn {
             {
                 let mut max = -std::f32::INFINITY;
                 for i in 0..M {
-                    max = f32::max(max, S[i]);
+                    max = max.max(S[i]) //f32::max(max, );
                 }
 
                 let mut sum: f32 = 0.0;
 
                 //  let ss: u16 = 0;
                 for i in 0..M {
-                    if (S[i] == -std::f32::INFINITY) {
+                    if S[i] == -std::f32::INFINITY {
                         S[i] = 0.0;
                     } else {
                         //const float val = (S[i] == -INFINITY) ? 0.0 : exp(S[i] - max);
                         let s = f16::from_f32(S[i] - max);
-                        let ss: u16 = unsafe { std::mem::transmute(s) };
-                        let val = GLOBAL_CPU_DEVICE_CACHE.get_exp_cache()[ss as usize].to_f32();
+                        // let ss: u16 = unsafe { std::mem::transmute(s) };
+                        let val = GLOBAL_CPU_DEVICE_CACHE
+                            .get_exp_cache(s.to_bits() as usize)
+                            .to_f32();
                         sum += val;
                         S[i] = val;
                     }
@@ -1282,6 +1334,7 @@ impl Map4 for FlashAttn {
                 }
             }
         }
+        println!("std::f32::INFINITY:{}", std::f32::INFINITY);
 
         Ok(())
     }
@@ -1396,6 +1449,19 @@ pub fn galois_cpy(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     match (src.device(), dst_device) {
         (Device::Cpu(s), Device::Cpu(d)) => {
             Cpy.map(s, src.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
+pub fn galois_flash_attn(Q: &Tensor, K: &Tensor, V: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (Q.device(), K.device(), V.device(), dst_device) {
+        (Device::Cpu(q), Device::Cpu(k), Device::Cpu(v), Device::Cpu(d)) => {
+            FlashAttn.map(q, Q.dim(), k, K.dim(), v, V.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -1911,44 +1977,44 @@ pub trait UnaryOp {
     fn _sqrt(&self) -> Self;
 }
 
-macro_rules! impl_float_unary_op {
-    ($a:ident) => {
-        impl UnaryOp for $a {
-            fn _exp(&self) -> Self {
-                self.exp()
-            }
-            fn _ln(&self) -> Self {
-                self.ln()
-            }
-            fn _sin(&self) -> Self {
-                self.sin()
-            }
-            fn _cos(&self) -> Self {
-                self.cos()
-            }
-            fn _tanh(&self) -> Self {
-                self.tanh()
-            }
-            fn _neg(&self) -> Self {
-                self.neg()
-            }
+// macro_rules! impl_float_unary_op {
+//     ($a:ident) => {
+//         impl UnaryOp for $a {
+//             fn _exp(&self) -> Self {
+//                 self.exp()
+//             }
+//             fn _ln(&self) -> Self {
+//                 self.ln()
+//             }
+//             fn _sin(&self) -> Self {
+//                 self.sin()
+//             }
+//             fn _cos(&self) -> Self {
+//                 self.cos()
+//             }
+//             fn _tanh(&self) -> Self {
+//                 self.tanh()
+//             }
+//             fn _neg(&self) -> Self {
+//                 self.neg()
+//             }
 
-            fn _recip(&self) -> Self {
-                self.recip()
-            }
-            fn _sqr(&self) -> Self {
-                self * self
-            }
-            fn _sqrt(&self) -> Self {
-                self.sqrt()
-            }
-        }
-    };
-}
+//             fn _recip(&self) -> Self {
+//                 self.recip()
+//             }
+//             fn _sqr(&self) -> Self {
+//                 self * self
+//             }
+//             fn _sqrt(&self) -> Self {
+//                 self.sqrt()
+//             }
+//         }
+//     };
+// }
 
-impl_float_unary_op!(f16);
-impl_float_unary_op!(f32);
-impl_float_unary_op!(f64);
+// impl_float_unary_op!(f16);
+// impl_float_unary_op!(f32);
+// impl_float_unary_op!(f64);
 
 // impl_binary_op!(Add, add); // +
 // impl_binary_op!(Sub, sub); // -
