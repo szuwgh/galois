@@ -1344,6 +1344,63 @@ impl Map4 for FlashAttn {
     }
 }
 
+struct Scale;
+
+impl Map2 for Scale {
+    const OP: &'static str = "scale";
+    fn f<T: TensorType>(
+        &self,
+        inp: &[T],
+        inp_d: &Dim,
+        inp1: &[T],
+        inp1_d: &Dim,
+        dst: &mut [T],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+    assert!(inp_d.ggml_is_contiguous());
+    GGML_ASSERT(ggml_is_contiguous(dst));
+    GGML_ASSERT(ggml_are_same_shape(src0, dst));
+    GGML_ASSERT(ggml_is_scalar(src1));
+
+    if (params->type == GGML_TASK_INIT || params->type == GGML_TASK_FINALIZE) {
+        return;
+    }
+
+    // scale factor
+    const float v = *(float *) src1->data;
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int nc = src0->ne[0];
+    const int nr = ggml_nrows(src0);
+
+    // rows per thread
+    const int dr = (nr + nth - 1)/nth;
+
+    // row range for this thread
+    const int ir0 = dr*ith;
+    const int ir1 = MIN(ir0 + dr, nr);
+
+    for (int i1 = ir0; i1 < ir1; i1++) {
+        ggml_vec_scale_f32(nc, (float *) ((char *) dst->data + i1*(dst->nb[1])), v);
+    }
+        Ok(())
+    }
+
+    fn f_f32(
+        &self,
+        inp: &[f32],
+        inp_d: &Dim,
+        inp1: &[f32],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        self.f(inp, inp_d, inp1, inp1_d, dst, dst_d)
+    }
+}
+
 pub fn galois_conv_1d_1s(kernel: &Tensor, src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
     match (kernel.device(), src.device(), dst_device) {
