@@ -1068,23 +1068,21 @@ impl Map for Cpy {
                         let src0_ptr = &inp[i01 * nb01 + i02 * nb02 + i03 * nb03..];
                         let dst_ptr = &mut dst[id * rs..];
 
-                        dst_ptr.clone_from_slice(&src0_ptr[..rs]);
+                        dst_ptr[..rs].copy_from_slice(&src0_ptr[..rs]);
                         id += 1;
                     }
                 }
             }
         } else {
-            let id = 0;
-           // float * dst_ptr = (float *) dst->data;
-
-            for  i03  in 0..ne03 {
-                for  i02  in 0..ne02 {
-                    for  i01 in 0..ne01 {
-                        for  i00  in  0..ne00 {
-                            const float * src0_ptr = (float *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-
-                            dst_ptr[id] = *src0_ptr;
-                            id++;
+            let mut id = 0;
+            // float * dst_ptr = (float *) dst->data;
+            for i03 in 0..ne03 {
+                for i02 in 0..ne02 {
+                    for i01 in 0..ne01 {
+                        for i00 in 0..ne00 {
+                            let src0_ptr = &inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
+                            dst[id] = *src0_ptr;
+                            id += 1;
                         }
                     }
                 }
@@ -1144,8 +1142,6 @@ impl Map4 for FlashAttn {
     ) -> GResult<()> {
         let (neq0, neq1, neq2, neq3) = q_d.dim4();
         let (nek0, nek1) = k_d.dim2();
-        println!("neq0, neq1, neq2, neq3:{},{},{},{}", neq0, neq1, neq2, neq3);
-        println!("nek0, nek1:{},{}", nek0, nek1);
         // const int neq0 = q->ne[0];
         // const int neq1 = q->ne[1];
         // const int neq2 = q->ne[2];
@@ -1173,10 +1169,6 @@ impl Map4 for FlashAttn {
         let (nbv0, nbv1, nbv2, nbv3) = v_d.stride_4d();
         let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
 
-        println!("nbk0, nbk1, nbk2, nbk3:{},{},{},{}", nbk0, nbk1, nbk2, nbk3);
-        println!("nbq0, nbq1, nbq2, nbq3:{},{},{},{}", nbq0, nbq1, nbq2, nbq3);
-        println!("nbv0, nbv1, nbv2, nbv3:{},{},{},{}", nbv0, nbv1, nbv2, nbv3);
-        println!("nb0, nb1, nb2, nb3:{},{},{},{}", nb0, nb1, nb2, nb3);
         // const int nbk0 = k->nb[0];
         // const int nbk1 = k->nb[1];
         // const int nbk2 = k->nb[2];
