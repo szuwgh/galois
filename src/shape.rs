@@ -213,6 +213,11 @@ impl Dim {
             && self.stride[3] == self.stride[2] * self.shape.layout()[2];
     }
 
+    pub fn is_scalar(&self) -> bool {
+        let (ne0, ne1, ne2, ne3) = self.dim4();
+        return ne0 == 1 && ne1 == 1 && ne2 == 1 && ne3 == 1;
+    }
+
     pub(crate) fn strided_blocks(&self) -> crate::StridedBlocks {
         let mut block_len = 1;
         let mut contiguous_dims = 0; // These are counted from the right.

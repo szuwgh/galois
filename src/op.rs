@@ -16,12 +16,13 @@ use core::arch::x86::*;
 use core::arch::x86_64::*;
 use core::cell::OnceCell;
 use core::simd::f32x32;
-use gemm::f16;
 use gemm::gemm;
 use gemm::Parallelism;
 use lazy_static::lazy_static;
 use rayon::prelude::*;
 use std::simd::num::SimdFloat;
+
+use half::f16;
 
 const COEF_A: f32 = 0.044715;
 const SQRT_2_OVER_PI: f64 = 0.797_884_560_802_865_4;
@@ -60,58 +61,147 @@ fn compute_gelu(v: f32) -> f32 {
 }
 
 #[inline]
-fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
+fn vec_scale_f32<T: std::ops::MulAssign + Copy>(n: usize, y: &mut [T], v: T) {
     for i in 0..n {
         y[i] *= v;
     }
 }
 
+// #[inline]
+// pub unsafe fn vld1q_f16(ptr: *const f16) -> float16x8_t {
+//     core::arch::aarch64::vld1q_u16(ptr as *const u16) as float16x8_t
+// }
+
+// #[inline]
+// pub unsafe fn vst1q_f16(ptr: *mut f16, a: float16x8_t) {
+//     core::arch::aarch64::vst1q_u16(ptr as *mut u16, a as uint16x8_t);
+// }
+
+// unsafe {
+//     let mut sumv0 = vdupq_n_f16(f16::ZERO.to_bits());
+//     let mut sumv1 = vdupq_n_f16(f16::ZERO.to_bits());
+//     let k_rounded = k - k % 16;
+//     for ki in (0..k_rounded).step_by(16) {
+//         let av0 = vld1q_f16(a.as_ptr().add(a_offset + ki));
+//         let bv0 = vld1q_f16(b.as_ptr().add(b_offset + ki));
+//         let av1 = vld1q_f16(a.as_ptr().add(a_offset + ki + 8));
+//         let bv1 = vld1q_f16(b.as_ptr().add(b_offset + ki + 8));
+//         sumv0 = vfmaq_f16(sumv0, av0, bv0);
+//         sumv1 = vfmaq_f16(sumv1, av1, bv1);
+//     }
+
+//     let mut sum = myaarch64::vaddvq_f16(sumv0) + myaarch64::vaddvq_f16(sumv1);
+//     for ki in k_rounded..k {
+//         sum += (a.get_unchecked(a_offset + ki) * b.get_unchecked(b_offset + ki)).to_f32();
+//     }
+//     sum
+// }
+
+// #[inline(always)]
+// unsafe fn vec_dot_f16(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
+//     *res = 0.0f32;
+//     for i in 0..len {
+//         *res += ((*lhs.add(i)).to_f32() * (*rhs.add(i)).to_f32());
+//     }
+// }
+
 #[inline(always)]
-unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: usize) {
-    // *c = 0.0f32;
-    // for i in 0..k {
-    //     *c += ((*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32());
-    // }
-
+unsafe fn vec_dot_f16(x: *const f16, y: *const f16, c: *mut f32, k: usize) {
     let mut sumf = 0.0f32;
-    let np = k & !(STEP - 1);
+    let n32 = k & !(STEP - 1);
 
-    let mut sum = [_mm256_setzero_ps(); ARR];
-    let mut ax = [_mm256_setzero_ps(); ARR];
-    let mut ay = [_mm256_setzero_ps(); ARR];
+    let mut sum0 = _mm256_setzero_ps();
+    let mut sum1 = _mm256_setzero_ps();
+    let mut sum2 = _mm256_setzero_ps();
+    let mut sum3 = _mm256_setzero_ps();
 
-    for i in (0..np).step_by(STEP) {
-        for j in 0..ARR {
-            ax[j] = _mm256_cvtph_ps(_mm_loadu_si128(a_row.add(i + j * EPR) as *const __m128i));
-            ay[j] = _mm256_cvtph_ps(_mm_loadu_si128(b_row.add(i + j * EPR) as *const __m128i));
-
-            sum[j] = _mm256_add_ps(_mm256_mul_ps(ax[j], ay[j]), sum[j]);
-        }
-    }
-
-    let mut offset = ARR >> 1;
-    for i in 0..offset {
-        sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
-    }
-    offset >>= 1;
-    for i in 0..offset {
-        sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
-    }
-    offset >>= 1;
-    for i in 0..offset {
-        sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
-    }
-    let t0 = _mm_add_ps(
-        _mm256_castps256_ps128(sum[0]),
-        _mm256_extractf128_ps(sum[0], 1),
+    let (mut x0, mut x1, mut x2, mut x3) = (
+        _mm256_setzero_ps(),
+        _mm256_setzero_ps(),
+        _mm256_setzero_ps(),
+        _mm256_setzero_ps(),
     );
-    let t1 = _mm_hadd_ps(t0, t0);
-    sumf = _mm_cvtss_f32(_mm_hadd_ps(t1, t1));
+    let (mut y0, mut y1, mut y2, mut y3) = (
+        _mm256_setzero_ps(),
+        _mm256_setzero_ps(),
+        _mm256_setzero_ps(),
+        _mm256_setzero_ps(),
+    );
+
+    for i in (0..n32).step_by(STEP) {
+        x0 = _mm256_cvtph_ps(_mm_loadu_si128(x.add(i + 0) as *const __m128i));
+        x1 = _mm256_cvtph_ps(_mm_loadu_si128(x.add(i + 8) as *const __m128i));
+        x2 = _mm256_cvtph_ps(_mm_loadu_si128(x.add(i + 16) as *const __m128i));
+        x3 = _mm256_cvtph_ps(_mm_loadu_si128(x.add(i + 24) as *const __m128i));
+
+        y0 = _mm256_cvtph_ps(_mm_loadu_si128(y.add(i + 0) as *const __m128i));
+        y1 = _mm256_cvtph_ps(_mm_loadu_si128(y.add(i + 8) as *const __m128i));
+        y2 = _mm256_cvtph_ps(_mm_loadu_si128(y.add(i + 16) as *const __m128i));
+        y3 = _mm256_cvtph_ps(_mm_loadu_si128(y.add(i + 24) as *const __m128i));
+
+        sum0 = _mm256_add_ps(_mm256_mul_ps(x0, y0), sum0);
+        sum1 = _mm256_add_ps(_mm256_mul_ps(x1, y1), sum1);
+        sum2 = _mm256_add_ps(_mm256_mul_ps(x2, y2), sum2);
+        sum3 = _mm256_add_ps(_mm256_mul_ps(x3, y3), sum3);
+    }
+
+    let sum01 = _mm256_add_ps(sum0, sum1);
+    let sum23 = _mm256_add_ps(sum2, sum3);
+    let sum0123 = _mm256_add_ps(sum01, sum23);
+
+    let r4 = _mm_add_ps(
+        _mm256_castps256_ps128(sum0123),
+        _mm256_extractf128_ps(sum0123, 1),
+    );
+    let r2 = _mm_add_ps(r4, _mm_movehl_ps(r4, r4));
+    let r1 = _mm_add_ss(r2, _mm_movehdup_ps(r2));
+
+    sumf = _mm_cvtss_f32(r1);
+
     // leftovers
-    for i in np..k {
-        sumf += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
+    for i in n32..k {
+        sumf += (*x.add(i)).to_f32() * (*y.add(i)).to_f32();
     }
     *c = sumf;
+    // let mut sumf = 0.0f32;
+    // let np = k & !(STEP - 1);
+
+    // let mut sum = [_mm256_setzero_ps(); ARR];
+    // let mut ax = [_mm256_setzero_ps(); ARR];
+    // let mut ay = [_mm256_setzero_ps(); ARR];
+
+    // for i in (0..np).step_by(STEP) {
+    //     for j in 0..ARR {
+    //         ax[j] = _mm256_cvtph_ps(_mm_loadu_si128(a_row.add(i + j * EPR) as *const __m128i));
+    //         ay[j] = _mm256_cvtph_ps(_mm_loadu_si128(b_row.add(i + j * EPR) as *const __m128i));
+
+    //         sum[j] = _mm256_add_ps(_mm256_mul_ps(ax[j], ay[j]), sum[j]);
+    //     }
+    // }
+
+    // let mut offset = ARR >> 1;
+    // for i in 0..offset {
+    //     sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
+    // }
+    // offset >>= 1;
+    // for i in 0..offset {
+    //     sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
+    // }
+    // offset >>= 1;
+    // for i in 0..offset {
+    //     sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
+    // }
+    // let t0 = _mm_add_ps(
+    //     _mm256_castps256_ps128(sum[0]),
+    //     _mm256_extractf128_ps(sum[0], 1),
+    // );
+    // let t1 = _mm_hadd_ps(t0, t0);
+    // sumf = _mm_cvtss_f32(_mm_hadd_ps(t1, t1));
+    // // leftovers
+    // for i in np..k {
+    //     sumf += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
+    // }
+    // *c = sumf;
 }
 
 unsafe impl Sync for CpuDeviceCache {}
@@ -377,6 +467,10 @@ impl Map2 for Conv1D1S {
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
+        let time1 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
         let (ne00, ne01, ne02) = k_d.dim3();
 
         let (ne10, ne11) = inp_d.dim2();
@@ -431,25 +525,27 @@ impl Map2 for Conv1D1S {
         let ir0 = 0; //dr * ith;
         let ir1 = std::cmp::min(ir0 + dr, nr);
 
-        // for i1 in ir0..ir1 {
-        //     let dst_data = &mut dst[i1 * nb1..];
+        // unsafe {
+        //     for i1 in ir0..ir1 {
+        //         let dst_data = &mut dst[i1 * nb1..];
 
-        //     for i0 in 0..ne10 {
-        //         dst_data[i0] = 0.0;
-        //         for k in -nh..=nh {
-        //             let mut v = 0.0f32;
-        //             let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
-        //             let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-        //             let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
-        //             let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-        //             unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
-        //             dst_data[i0] += v;
+        //         for i0 in 0..ne10 {
+        //             dst_data[i0] = 0.0;
+        //             for k in -nh..=nh {
+        //                 let mut v = 0.0f32;
+        //                 let wdata1_idx =
+        //                     ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+        //                 let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+        //                 let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+        //                 let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+        //                 unsafe { vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+        //                 dst_data[i0] += v;
+        //             }
         //         }
         //     }
         // }
-        dst.par_chunks_mut(nb1)
-            .enumerate()
-            .for_each(|(i1, dst_data)| {
+        unsafe {
+            dst.chunks_mut(nb1).enumerate().for_each(|(i1, dst_data)| {
                 for i0 in 0..ne10 {
                     dst_data[i0] = 0.0;
                     for k in -nh..=nh {
@@ -459,12 +555,17 @@ impl Map2 for Conv1D1S {
                         let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
                         let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
                         let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-                        unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+                        vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0);
                         dst_data[i0] += v;
                     }
                 }
             });
-
+        }
+        let time2 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        println!("{} time:{} ms", Self::OP, time2 - time1);
         // (0..nr).into_par_iter().for_each(|i1| {
         //     let dst_data = &mut dst[i1 * nb1..];
 
@@ -594,7 +695,7 @@ impl Map2 for Conv1D2S {
                         let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
                         let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
                         let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-                        unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+                        unsafe { vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
                         dst_data[i0 / 2] += v;
                     }
                 }
@@ -966,7 +1067,7 @@ impl Map2 for MatMul {
             for ic in 0..ne11 {
                 //  assert!(ne00 % 32 == 0);
                 unsafe {
-                    f16::vec_dot_f16(
+                    vec_dot_f16(
                         src0_row.as_ptr(),
                         src1_col[ic * ne00..].as_ptr(),
                         dst_col[ic * ne0..].as_mut_ptr(),
@@ -1350,41 +1451,39 @@ impl Map2 for Scale {
     const OP: &'static str = "scale";
     fn f<T: TensorType>(
         &self,
-        inp: &[T],
-        inp_d: &Dim,
+        inp0: &[T],
+        inp0_d: &Dim,
         inp1: &[T],
         inp1_d: &Dim,
         dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
-    assert!(inp_d.ggml_is_contiguous());
-    GGML_ASSERT(ggml_is_contiguous(dst));
-    GGML_ASSERT(ggml_are_same_shape(src0, dst));
-    GGML_ASSERT(ggml_is_scalar(src1));
+        assert!(inp0_d.ggml_is_contiguous());
+        assert!(dst_d.ggml_is_contiguous());
+        assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
+        assert!(inp1_d.is_scalar());
 
-    if (params->type == GGML_TASK_INIT || params->type == GGML_TASK_FINALIZE) {
-        return;
-    }
+        // scale factor
+        let v = inp1[0];
 
-    // scale factor
-    const float v = *(float *) src1->data;
+        let ith = 0;
+        let nth = 1;
 
-    const int ith = params->ith;
-    const int nth = params->nth;
+        let nc = inp0_d.dim1();
+        let nr = inp0_d.nrows();
 
-    const int nc = src0->ne[0];
-    const int nr = ggml_nrows(src0);
+        let (_, nb1) = dst_d.stride_2d();
 
-    // rows per thread
-    const int dr = (nr + nth - 1)/nth;
+        // rows per thread
+        let dr = (nr + nth - 1) / nth;
 
-    // row range for this thread
-    const int ir0 = dr*ith;
-    const int ir1 = MIN(ir0 + dr, nr);
+        // row range for this thread
+        let ir0 = dr * ith;
+        let ir1 = std::cmp::min(ir0 + dr, nr);
 
-    for (int i1 = ir0; i1 < ir1; i1++) {
-        ggml_vec_scale_f32(nc, (float *) ((char *) dst->data + i1*(dst->nb[1])), v);
-    }
+        for i1 in ir0..ir1 {
+            vec_scale_f32(nc, &mut dst[i1 * nb1..], v);
+        }
         Ok(())
     }
 
@@ -1523,6 +1622,19 @@ pub fn galois_flash_attn(Q: &Tensor, K: &Tensor, V: &Tensor, dst: &mut Tensor) -
     match (Q.device(), K.device(), V.device(), dst_device) {
         (Device::Cpu(q), Device::Cpu(k), Device::Cpu(v), Device::Cpu(d)) => {
             FlashAttn.map(q, Q.dim(), k, K.dim(), v, V.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
+pub fn galois_scale(src0: &Tensor, src1: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src0.device(), src1.device(), dst_device) {
+        (Device::Cpu(s0), Device::Cpu(s1), Device::Cpu(d)) => {
+            Scale.map(s0, src0.dim(), s1, src1.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
