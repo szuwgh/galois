@@ -910,31 +910,31 @@ impl CpuDevice {
         };
     }
 
-    pub(crate) fn matmul(
-        &self,
-        dim: &Dim,
-        rhs: &Self,
-        rhs_dim: &Dim,
-        bmnk: (usize, usize, usize, usize),
-    ) -> GResult<CpuDevice> {
-        match (self, rhs) {
-            (CpuDevice::F16(l), CpuDevice::F16(r)) => {
-                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
-                Ok(v.to_cpu_device())
-            }
-            (CpuDevice::F32(l), CpuDevice::F32(r)) => {
-                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
-                Ok(v.to_cpu_device())
-            }
-            (CpuDevice::F64(l), CpuDevice::F64(r)) => {
-                let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
-                Ok(v.to_cpu_device())
-            }
-            _ => {
-                todo!()
-            }
-        }
-    }
+    // pub(crate) fn matmul(
+    //     &self,
+    //     dim: &Dim,
+    //     rhs: &Self,
+    //     rhs_dim: &Dim,
+    //     bmnk: (usize, usize, usize, usize),
+    // ) -> GResult<CpuDevice> {
+    //     match (self, rhs) {
+    //         (CpuDevice::F16(l), CpuDevice::F16(r)) => {
+    //             let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
+    //             Ok(v.to_cpu_device())
+    //         }
+    //         (CpuDevice::F32(l), CpuDevice::F32(r)) => {
+    //             let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
+    //             Ok(v.to_cpu_device())
+    //         }
+    //         (CpuDevice::F64(l), CpuDevice::F64(r)) => {
+    //             let v = MatMul(bmnk).compute(l.as_slice(), dim, r.as_slice(), rhs_dim)?;
+    //             Ok(v.to_cpu_device())
+    //         }
+    //         _ => {
+    //             todo!()
+    //         }
+    //     }
+    // }
 
     pub(crate) fn copy_strided_src(&self, rhs: &mut Self, dst_offset: usize, src_l: &Dim) {
         match (self, rhs) {
@@ -1035,25 +1035,25 @@ impl Device {
         };
     }
 
-    pub(crate) fn matmul(
-        &self,
-        dim: &Dim,
-        rhs: &Self,
-        rhs_dim: &Dim,
-        bmnk: (usize, usize, usize, usize),
-    ) -> GResult<Device> {
-        match (self, rhs) {
-            (Device::Cpu(lhs), Device::Cpu(rhs)) => {
-                Ok(Device::Cpu(lhs.matmul(dim, rhs, rhs_dim, bmnk)?))
-            }
-            (Device::Gpu(), Device::Gpu()) => {
-                todo!()
-            }
-            _ => {
-                todo!()
-            }
-        }
-    }
+    // pub(crate) fn matmul(
+    //     &self,
+    //     dim: &Dim,
+    //     rhs: &Self,
+    //     rhs_dim: &Dim,
+    //     bmnk: (usize, usize, usize, usize),
+    // ) -> GResult<Device> {
+    //     match (self, rhs) {
+    //         (Device::Cpu(lhs), Device::Cpu(rhs)) => {
+    //             Ok(Device::Cpu(lhs.matmul(dim, rhs, rhs_dim, bmnk)?))
+    //         }
+    //         (Device::Gpu(), Device::Gpu()) => {
+    //             todo!()
+    //         }
+    //         _ => {
+    //             todo!()
+    //         }
+    //     }
+    // }
 
     pub(crate) fn copy_strided_src(&self, rhs: &mut Self, dst_offset: usize, src_l: &Dim) {
         match (self, rhs) {
@@ -1462,51 +1462,51 @@ impl Tensor {
     //     }
     // }
 
-    pub fn matmul(&self, rhs: &Tensor) -> GResult<Tensor> {
-        //  assert!(self.dim().is_contiguous());
-        //  assert!(rhs.dim().is_contiguous());
-        //  assert!(self.dim().shape().last() == self.dim().shape().last());
+    // pub fn matmul(&self, rhs: &Tensor) -> GResult<Tensor> {
+    //     //  assert!(self.dim().is_contiguous());
+    //     //  assert!(rhs.dim().is_contiguous());
+    //     //  assert!(self.dim().shape().last() == self.dim().shape().last());
 
-        let l_dim = self.dim().shape();
-        let r_dim: &[usize] = rhs.dim().shape();
-        let dim = l_dim.len();
-        if dim < 2 || r_dim.len() != dim {
-            return Err(GError::ShapeMismatchBinaryOp {
-                lhs: self.dim().shape.clone(),
-                rhs: rhs.dim().shape.clone(),
-                op: "matmul",
-            });
-        }
-        let m = l_dim[dim - 2];
-        let k = l_dim[dim - 1];
-        let k2 = r_dim[dim - 2];
-        let n = r_dim[dim - 1];
-        let mut c_dim = l_dim[..dim - 2].to_vec();
-        c_dim.extend(&[m, n]);
-        let c_n_dims = c_dim.len();
-        let c_shape = Shape::from_vec(c_dim);
-        let batching: usize = l_dim[..dim - 2].iter().product();
-        let batching_b: usize = r_dim[..dim - 2].iter().product();
-        if k != k2 || batching != batching_b {
-            return Err(GError::ShapeMismatchBinaryOp {
-                lhs: self.dim().shape.clone(),
-                rhs: rhs.dim().shape.clone(),
-                op: "matmul",
-            });
-        }
+    //     let l_dim = self.dim().shape();
+    //     let r_dim: &[usize] = rhs.dim().shape();
+    //     let dim = l_dim.len();
+    //     if dim < 2 || r_dim.len() != dim {
+    //         return Err(GError::ShapeMismatchBinaryOp {
+    //             lhs: self.dim().shape.clone(),
+    //             rhs: rhs.dim().shape.clone(),
+    //             op: "matmul",
+    //         });
+    //     }
+    //     let m = l_dim[dim - 2];
+    //     let k = l_dim[dim - 1];
+    //     let k2 = r_dim[dim - 2];
+    //     let n = r_dim[dim - 1];
+    //     let mut c_dim = l_dim[..dim - 2].to_vec();
+    //     c_dim.extend(&[m, n]);
+    //     let c_n_dims = c_dim.len();
+    //     let c_shape = Shape::from_vec(c_dim);
+    //     let batching: usize = l_dim[..dim - 2].iter().product();
+    //     let batching_b: usize = r_dim[..dim - 2].iter().product();
+    //     if k != k2 || batching != batching_b {
+    //         return Err(GError::ShapeMismatchBinaryOp {
+    //             lhs: self.dim().shape.clone(),
+    //             rhs: rhs.dim().shape.clone(),
+    //             op: "matmul",
+    //         });
+    //     }
 
-        let device =
-            self.device()
-                .matmul(self.dim(), rhs.device(), rhs.dim(), (batching, m, n, k))?;
+    //     let device =
+    //         self.device()
+    //             .matmul(self.dim(), rhs.device(), rhs.dim(), (batching, m, n, k))?;
 
-        // let c = MatMul(batching, m, n, k).compute(
-        //     self.as_slice(),
-        //     self.dim(),
-        //     rhs.as_slice(),
-        //     rhs.dim(),
-        // )?;
-        Ok(Self::from_device(device, c_n_dims, c_shape, self.dtype()))
-    }
+    //     // let c = MatMul(batching, m, n, k).compute(
+    //     //     self.as_slice(),
+    //     //     self.dim(),
+    //     //     rhs.as_slice(),
+    //     //     rhs.dim(),
+    //     // )?;
+    //     Ok(Self::from_device(device, c_n_dims, c_shape, self.dtype()))
+    // }
 
     // pub fn into_reshape(self, s: Shape) -> Tensor {
     //     if self.dim.elem_count() != s.elem_count() {
@@ -1793,103 +1793,103 @@ impl Tensor {
     // }
 }
 
-struct MatMul((usize, usize, usize, usize));
+// struct MatMul((usize, usize, usize, usize));
 
-impl MatMul {
-    fn compute<T: TensorType + 'static>(
-        &self,
-        lhs: &[T],
-        lhs_l: &Dim,
-        rhs: &[T],
-        rhs_l: &Dim,
-    ) -> GResult<Vec<T>> {
-        use gemm::{gemm, Parallelism};
+// impl MatMul {
+//     fn compute<T: TensorType + 'static>(
+//         &self,
+//         lhs: &[T],
+//         lhs_l: &Dim,
+//         rhs: &[T],
+//         rhs_l: &Dim,
+//     ) -> GResult<Vec<T>> {
+//         use gemm::{gemm, Parallelism};
 
-        // match T::DTYPE {
+//         // match T::DTYPE {
 
-        //     DType::F16 | DType::F32 | DType::F64 => {}
-        //     _ => Err(Error::UnsupportedDTypeForOp(T::DTYPE, "matmul").bt())?,
-        // }
+//         //     DType::F16 | DType::F32 | DType::F64 => {}
+//         //     _ => Err(Error::UnsupportedDTypeForOp(T::DTYPE, "matmul").bt())?,
+//         // }
 
-        let (b, m, n, k) = self.0;
-        let lhs_stride = lhs_l.nd_stride();
-        let rhs_stride = rhs_l.nd_stride();
-        let rank = lhs_l.n_dims();
-        let lhs_cs = lhs_stride[rank - 1];
-        let lhs_rs = lhs_stride[rank - 2];
+//         let (b, m, n, k) = self.0;
+//         let lhs_stride = lhs_l.nd_stride();
+//         let rhs_stride = rhs_l.nd_stride();
+//         let rank = lhs_l.n_dims();
+//         let lhs_cs = lhs_stride[rank - 1];
+//         let lhs_rs = lhs_stride[rank - 2];
 
-        let rhs_cs = rhs_stride[rank - 1];
-        let rhs_rs = rhs_stride[rank - 2];
+//         let rhs_cs = rhs_stride[rank - 1];
+//         let rhs_rs = rhs_stride[rank - 2];
 
-        let a_skip: usize = match lhs_stride[..rank - 2] {
-            [s1, stride] if s1 == stride * lhs_l.shape()[1] => stride,
-            [stride] => stride,
-            [] => m * k,
-            _ => {
-                return Err(GError::MatMulUnexpectedStriding {
-                    lhs_l: lhs_l.clone(),
-                    rhs_l: rhs_l.clone(),
-                    bmnk: (b, m, n, k),
-                    msg: "non-contiguous lhs",
-                });
-            }
-        };
-        let b_skip: usize = match rhs_stride[..rank - 2] {
-            [s1, stride] if s1 == stride * rhs_l.shape()[1] => stride,
-            [stride] => stride,
-            [] => n * k,
-            _ => {
-                return Err(GError::MatMulUnexpectedStriding {
-                    lhs_l: lhs_l.clone(),
-                    rhs_l: rhs_l.clone(),
-                    bmnk: (b, m, n, k),
-                    msg: "non-contiguous lhs",
-                });
-            }
-        };
-        let c_skip: usize = m * n;
-        let dst_shape: Shape = Shape::from_array([m, n]);
-        let dst_strides = dst_shape.stride_contiguous();
-        let dst_rs = dst_strides[0];
-        let dst_cs = dst_strides[1];
-        let mut dst = vec![T::zero(); b * m * n];
-        let num_threads = num_cpus::get();
-        let parallelism = if num_threads > 1 {
-            Parallelism::Rayon(num_threads)
-        } else {
-            Parallelism::None
-        };
-        for step in 0..b {
-            let lhs_p = &lhs[step * a_skip..];
-            let rhs_p = &rhs[step * b_skip..];
-            let dst_p = &mut dst[step * c_skip..];
-            unsafe {
-                gemm(
-                    /* m: usize = */ m,
-                    /* n: usize = */ n,
-                    /* k: usize = */ k,
-                    /* dst: *mut T = */ dst_p.as_mut_ptr(),
-                    /* dst_cs: isize = */ dst_cs as isize,
-                    /* dst_rs: isize = */ dst_rs as isize,
-                    /* read_dst: bool = */ false,
-                    /* lhs: *const T = */ lhs_p.as_ptr(),
-                    /* lhs_cs: isize = */ lhs_cs as isize,
-                    /* lhs_rs: isize = */ lhs_rs as isize,
-                    /* rhs: *const T = */ rhs_p.as_ptr(),
-                    /* rhs_cs: isize = */ rhs_cs as isize,
-                    /* rhs_rs: isize = */ rhs_rs as isize,
-                    /* alpha: T = */ T::zero(),
-                    /* beta: T = */ T::one(),
-                    /* conj_dst: bool = */ false,
-                    /* conj_lhs: bool = */ false,
-                    /* conj_rhs: bool = */ false,
-                    parallelism,
-                )
-            }
-        }
-        Ok(dst)
-    }
-}
+//         let a_skip: usize = match lhs_stride[..rank - 2] {
+//             [s1, stride] if s1 == stride * lhs_l.shape()[1] => stride,
+//             [stride] => stride,
+//             [] => m * k,
+//             _ => {
+//                 return Err(GError::MatMulUnexpectedStriding {
+//                     lhs_l: lhs_l.clone(),
+//                     rhs_l: rhs_l.clone(),
+//                     bmnk: (b, m, n, k),
+//                     msg: "non-contiguous lhs",
+//                 });
+//             }
+//         };
+//         let b_skip: usize = match rhs_stride[..rank - 2] {
+//             [s1, stride] if s1 == stride * rhs_l.shape()[1] => stride,
+//             [stride] => stride,
+//             [] => n * k,
+//             _ => {
+//                 return Err(GError::MatMulUnexpectedStriding {
+//                     lhs_l: lhs_l.clone(),
+//                     rhs_l: rhs_l.clone(),
+//                     bmnk: (b, m, n, k),
+//                     msg: "non-contiguous lhs",
+//                 });
+//             }
+//         };
+//         let c_skip: usize = m * n;
+//         let dst_shape: Shape = Shape::from_array([m, n]);
+//         let dst_strides = dst_shape.stride_contiguous();
+//         let dst_rs = dst_strides[0];
+//         let dst_cs = dst_strides[1];
+//         let mut dst = vec![T::zero(); b * m * n];
+//         let num_threads = num_cpus::get();
+//         let parallelism = if num_threads > 1 {
+//             Parallelism::Rayon(num_threads)
+//         } else {
+//             Parallelism::None
+//         };
+//         for step in 0..b {
+//             let lhs_p = &lhs[step * a_skip..];
+//             let rhs_p = &rhs[step * b_skip..];
+//             let dst_p = &mut dst[step * c_skip..];
+//             unsafe {
+//                 gemm(
+//                     /* m: usize = */ m,
+//                     /* n: usize = */ n,
+//                     /* k: usize = */ k,
+//                     /* dst: *mut T = */ dst_p.as_mut_ptr(),
+//                     /* dst_cs: isize = */ dst_cs as isize,
+//                     /* dst_rs: isize = */ dst_rs as isize,
+//                     /* read_dst: bool = */ false,
+//                     /* lhs: *const T = */ lhs_p.as_ptr(),
+//                     /* lhs_cs: isize = */ lhs_cs as isize,
+//                     /* lhs_rs: isize = */ lhs_rs as isize,
+//                     /* rhs: *const T = */ rhs_p.as_ptr(),
+//                     /* rhs_cs: isize = */ rhs_cs as isize,
+//                     /* rhs_rs: isize = */ rhs_rs as isize,
+//                     /* alpha: T = */ T::zero(),
+//                     /* beta: T = */ T::one(),
+//                     /* conj_dst: bool = */ false,
+//                     /* conj_lhs: bool = */ false,
+//                     /* conj_rhs: bool = */ false,
+//                     parallelism,
+//                 )
+//             }
+//         }
+//         Ok(dst)
+//     }
+// }
 
 #[derive(Debug)]
 pub struct StridedIndex<'a> {
@@ -2207,20 +2207,20 @@ mod tests {
         println!("{:?}", d);
     }
 
-    #[test]
-    fn test_matmul() {
-        let m1 = mat(&[[1.0f32, 2.0], [3.0f32, 4.0], [3.0f32, 4.0]]);
-        let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
-        let mut d = m1.matmul(&m2).unwrap();
-        println!("{:?}", d);
-        let v = unsafe { d.as_slice_mut::<f32>() };
-        println!("{:?}", v);
+    // #[test]
+    // fn test_matmul() {
+    //     let m1 = mat(&[[1.0f32, 2.0], [3.0f32, 4.0], [3.0f32, 4.0]]);
+    //     let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 4.0, 5.0]]);
+    //     let mut d = m1.matmul(&m2).unwrap();
+    //     println!("{:?}", d);
+    //     let v = unsafe { d.as_slice_mut::<f32>() };
+    //     println!("{:?}", v);
 
-        // let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
-        // let m2 = mat(&[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]);
-        // let d = m1.matmul(&m2).unwrap();
-        // println!("{:?}", d);
-    }
+    //     // let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+    //     // let m2 = mat(&[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]);
+    //     // let d = m1.matmul(&m2).unwrap();
+    //     // println!("{:?}", d);
+    // }
 
     // [[1, 2, 3],
     //  [2, 4, 6],

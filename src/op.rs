@@ -16,8 +16,6 @@ use core::arch::x86::*;
 use core::arch::x86_64::*;
 use core::cell::OnceCell;
 use core::simd::f32x32;
-use gemm::gemm;
-use gemm::Parallelism;
 use lazy_static::lazy_static;
 use rayon::prelude::*;
 use std::simd::num::SimdFloat;
@@ -545,21 +543,23 @@ impl Map2 for Conv1D1S {
         //     }
         // }
         unsafe {
-            dst.chunks_mut(nb1).enumerate().for_each(|(i1, dst_data)| {
-                for i0 in 0..ne10 {
-                    dst_data[i0] = 0.0;
-                    for k in -nh..=nh {
-                        let mut v = 0.0f32;
-                        let wdata1_idx =
-                            ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
-                        let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-                        let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
-                        let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-                        vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0);
-                        dst_data[i0] += v;
+            dst.par_chunks_mut(nb1)
+                .enumerate()
+                .for_each(|(i1, dst_data)| {
+                    for i0 in 0..ne10 {
+                        dst_data[i0] = 0.0;
+                        for k in -nh..=nh {
+                            let mut v = 0.0f32;
+                            let wdata1_idx =
+                                ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+                            let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+                            let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+                            let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+                            vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0);
+                            dst_data[i0] += v;
+                        }
                     }
-                }
-            });
+                });
         }
         let time2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -884,82 +884,82 @@ impl MatMul {
         dst: &mut [T],
         (batching, m, n, k): (usize, usize, usize, usize),
     ) -> GResult<()> {
-        let (b, m, n, k) = (batching, m, n, k);
-        let lhs_stride = lhs_l.nd_stride();
-        let rhs_stride = rhs_l.nd_stride();
-        let rank = lhs_l.n_dims();
-        let lhs_cs = lhs_stride[rank - 1];
-        let lhs_rs = lhs_stride[rank - 2];
+        // let (b, m, n, k) = (batching, m, n, k);
+        // let lhs_stride = lhs_l.nd_stride();
+        // let rhs_stride = rhs_l.nd_stride();
+        // let rank = lhs_l.n_dims();
+        // let lhs_cs = lhs_stride[rank - 1];
+        // let lhs_rs = lhs_stride[rank - 2];
 
-        let rhs_cs = rhs_stride[rank - 1];
-        let rhs_rs = rhs_stride[rank - 2];
+        // let rhs_cs = rhs_stride[rank - 1];
+        // let rhs_rs = rhs_stride[rank - 2];
 
-        let a_skip: usize = match lhs_stride[..rank - 2] {
-            [s1, stride] if s1 == stride * lhs_l.shape()[1] => stride,
-            [stride] => stride,
-            [] => m * k,
-            _ => {
-                return Err(GError::MatMulUnexpectedStriding {
-                    lhs_l: lhs_l.clone(),
-                    rhs_l: rhs_l.clone(),
-                    bmnk: (b, m, n, k),
-                    msg: "non-contiguous lhs",
-                });
-            }
-        };
-        let b_skip: usize = match rhs_stride[..rank - 2] {
-            [s1, stride] if s1 == stride * rhs_l.shape()[1] => stride,
-            [stride] => stride,
-            [] => n * k,
-            _ => {
-                return Err(GError::MatMulUnexpectedStriding {
-                    lhs_l: lhs_l.clone(),
-                    rhs_l: rhs_l.clone(),
-                    bmnk: (b, m, n, k),
-                    msg: "non-contiguous lhs",
-                });
-            }
-        };
-        let c_skip: usize = m * n;
-        let dst_shape: Shape = Shape::from_array([m, n]);
-        let dst_strides = dst_shape.stride_contiguous();
-        let dst_rs = dst_strides[0];
-        let dst_cs = dst_strides[1];
-        //let mut dst = vec![T::zero(); b * m * n];
-        let num_threads = num_cpus::get();
-        let parallelism = if num_threads > 1 {
-            Parallelism::Rayon(num_threads)
-        } else {
-            Parallelism::None
-        };
-        for step in 0..b {
-            let lhs_p = &lhs[step * a_skip..];
-            let rhs_p = &rhs[step * b_skip..];
-            let dst_p = &mut dst[step * c_skip..];
-            unsafe {
-                gemm(
-                    /* m: usize = */ m,
-                    /* n: usize = */ n,
-                    /* k: usize = */ k,
-                    /* dst: *mut T = */ dst_p.as_mut_ptr(),
-                    /* dst_cs: isize = */ dst_cs as isize,
-                    /* dst_rs: isize = */ dst_rs as isize,
-                    /* read_dst: bool = */ false,
-                    /* lhs: *const T = */ lhs_p.as_ptr(),
-                    /* lhs_cs: isize = */ lhs_cs as isize,
-                    /* lhs_rs: isize = */ lhs_rs as isize,
-                    /* rhs: *const T = */ rhs_p.as_ptr(),
-                    /* rhs_cs: isize = */ rhs_cs as isize,
-                    /* rhs_rs: isize = */ rhs_rs as isize,
-                    /* alpha: T = */ T::zero(),
-                    /* beta: T = */ T::one(),
-                    /* conj_dst: bool = */ false,
-                    /* conj_lhs: bool = */ false,
-                    /* conj_rhs: bool = */ false,
-                    parallelism,
-                )
-            }
-        }
+        // let a_skip: usize = match lhs_stride[..rank - 2] {
+        //     [s1, stride] if s1 == stride * lhs_l.shape()[1] => stride,
+        //     [stride] => stride,
+        //     [] => m * k,
+        //     _ => {
+        //         return Err(GError::MatMulUnexpectedStriding {
+        //             lhs_l: lhs_l.clone(),
+        //             rhs_l: rhs_l.clone(),
+        //             bmnk: (b, m, n, k),
+        //             msg: "non-contiguous lhs",
+        //         });
+        //     }
+        // };
+        // let b_skip: usize = match rhs_stride[..rank - 2] {
+        //     [s1, stride] if s1 == stride * rhs_l.shape()[1] => stride,
+        //     [stride] => stride,
+        //     [] => n * k,
+        //     _ => {
+        //         return Err(GError::MatMulUnexpectedStriding {
+        //             lhs_l: lhs_l.clone(),
+        //             rhs_l: rhs_l.clone(),
+        //             bmnk: (b, m, n, k),
+        //             msg: "non-contiguous lhs",
+        //         });
+        //     }
+        // };
+        // let c_skip: usize = m * n;
+        // let dst_shape: Shape = Shape::from_array([m, n]);
+        // let dst_strides = dst_shape.stride_contiguous();
+        // let dst_rs = dst_strides[0];
+        // let dst_cs = dst_strides[1];
+        // //let mut dst = vec![T::zero(); b * m * n];
+        // let num_threads = num_cpus::get();
+        // let parallelism = if num_threads > 1 {
+        //     Parallelism::Rayon(num_threads)
+        // } else {
+        //     Parallelism::None
+        // };
+        // for step in 0..b {
+        //     let lhs_p = &lhs[step * a_skip..];
+        //     let rhs_p = &rhs[step * b_skip..];
+        //     let dst_p = &mut dst[step * c_skip..];
+        //     unsafe {
+        //         gemm(
+        //             /* m: usize = */ m,
+        //             /* n: usize = */ n,
+        //             /* k: usize = */ k,
+        //             /* dst: *mut T = */ dst_p.as_mut_ptr(),
+        //             /* dst_cs: isize = */ dst_cs as isize,
+        //             /* dst_rs: isize = */ dst_rs as isize,
+        //             /* read_dst: bool = */ false,
+        //             /* lhs: *const T = */ lhs_p.as_ptr(),
+        //             /* lhs_cs: isize = */ lhs_cs as isize,
+        //             /* lhs_rs: isize = */ lhs_rs as isize,
+        //             /* rhs: *const T = */ rhs_p.as_ptr(),
+        //             /* rhs_cs: isize = */ rhs_cs as isize,
+        //             /* rhs_rs: isize = */ rhs_rs as isize,
+        //             /* alpha: T = */ T::zero(),
+        //             /* beta: T = */ T::one(),
+        //             /* conj_dst: bool = */ false,
+        //             /* conj_lhs: bool = */ false,
+        //             /* conj_rhs: bool = */ false,
+        //             parallelism,
+        //         )
+        //     }
+        // }
         Ok(())
     }
 }
