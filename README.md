@@ -29,3 +29,5 @@ fn main() {
     let m4 = &m1 * &m2;
 }
 ```
+
+RUSTFLAGS="-C target-feature=+avx,+avx2,+fma,+f16c -C relocation-model=pic -C link-arg=-pthread -C opt-level=3 -Ctarget-cpu=native" cargo run
