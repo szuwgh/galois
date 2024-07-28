@@ -32,6 +32,7 @@ use num_traits::ToPrimitive;
 
 pub type F16 = half::f16;
 
+const QK: usize = 32;
 // const STEP: usize = 128;
 // const EPR: usize = 32;
 // const ARR: usize = STEP / EPR;
@@ -39,6 +40,7 @@ pub type F16 = half::f16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
 pub enum DType {
+    Q4_0,
     F16,
     F32,
     F64,
@@ -46,6 +48,7 @@ pub enum DType {
 }
 
 pub const GS_TYPE_SIZE: [usize; DType::TypeCount as usize] = [
+    std::mem::size_of::<f32>() + QK / 2,
     std::mem::size_of::<F16>(),
     std::mem::size_of::<f32>(),
     std::mem::size_of::<f64>(),

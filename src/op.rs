@@ -95,14 +95,15 @@ fn vec_scale_f32<T: std::ops::MulAssign + Copy>(n: usize, y: &mut [T], v: T) {
 //     sum
 // }
 
-// #[inline(always)]
-// unsafe fn vec_dot_f16(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
-//     *res = 0.0f32;
-//     for i in 0..len {
-//         *res += ((*lhs.add(i)).to_f32() * (*rhs.add(i)).to_f32());
-//     }
-// }
+#[inline(always)]
+unsafe fn vec_dot_f16(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
+    *res = 0.0f32;
+    for i in 0..len {
+        *res += ((*lhs.add(i)).to_f32() * (*rhs.add(i)).to_f32());
+    }
+}
 
+#[cfg(target_feature = "avx2")]
 #[inline(always)]
 unsafe fn vec_dot_f16(x: *const f16, y: *const f16, c: *mut f32, k: usize) {
     let mut sumf = 0.0f32;
