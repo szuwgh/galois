@@ -54,6 +54,8 @@ pub const GS_TYPE_SIZE: [usize; DType::TypeCount as usize] = [
     std::mem::size_of::<f64>(),
 ];
 
+pub const GS_BLCK_SIZE: [usize; DType::TypeCount as usize] = [QK, 1, 1, 1];
+
 #[macro_export]
 macro_rules! impl_tousize {
     ($($e:ident),*) => {
