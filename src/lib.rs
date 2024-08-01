@@ -1317,6 +1317,10 @@ impl Tensor {
         self.dim.dim1()
     }
 
+    pub fn dim2(&self) -> (usize, usize) {
+        self.dim.dim2()
+    }
+
     pub fn dim3(&self) -> (usize, usize, usize) {
         self.dim.dim3()
     }
