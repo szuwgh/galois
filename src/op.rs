@@ -59,7 +59,7 @@ fn compute_gelu(v: f32) -> f32 {
 }
 
 #[inline]
-fn vec_scale_f32<T: std::ops::MulAssign + Copy>(n: usize, y: &mut [T], v: T) {
+fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
     for i in 0..n {
         y[i] *= v;
     }
@@ -1459,6 +1459,44 @@ impl Map2 for Scale {
         dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
+        // assert!(inp0_d.ggml_is_contiguous());
+        // assert!(dst_d.ggml_is_contiguous());
+        // assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
+        // assert!(inp1_d.is_scalar());
+
+        // // scale factor
+        // let v = inp1[0];
+
+        // let ith = 0;
+        // let nth = 1;
+
+        // let nc = inp0_d.dim1();
+        // let nr = inp0_d.nrows();
+
+        // let (_, nb1) = dst_d.stride_2d();
+
+        // // rows per thread
+        // let dr = (nr + nth - 1) / nth;
+
+        // // row range for this thread
+        // let ir0 = dr * ith;
+        // let ir1 = std::cmp::min(ir0 + dr, nr);
+
+        // for i1 in ir0..ir1 {
+        //     vec_scale_f32(nc, &mut dst[i1 * nb1..], v);
+        // }
+        Ok(())
+    }
+
+    fn f_f32(
+        &self,
+        inp0: &[f32],
+        inp0_d: &Dim,
+        inp1: &[f32],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
         assert!(inp0_d.ggml_is_contiguous());
         assert!(dst_d.ggml_is_contiguous());
         assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
@@ -1486,18 +1524,6 @@ impl Map2 for Scale {
             vec_scale_f32(nc, &mut dst[i1 * nb1..], v);
         }
         Ok(())
-    }
-
-    fn f_f32(
-        &self,
-        inp: &[f32],
-        inp_d: &Dim,
-        inp1: &[f32],
-        inp1_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        self.f(inp, inp_d, inp1, inp1_d, dst, dst_d)
     }
 }
 
