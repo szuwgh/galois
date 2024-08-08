@@ -2,9 +2,11 @@ use core::time;
 use std::ops::Neg;
 
 use crate::error::GResult;
+use crate::ggml_quants::QuantType;
 use crate::Device;
 use crate::GError;
 //use super::broadcast::{broadcasting_binary_op, general_broadcasting};
+use crate::BlockQ4_0;
 use crate::CpuDevice;
 use crate::Dim;
 use crate::Shape;
@@ -16,11 +18,10 @@ use core::arch::x86::*;
 use core::arch::x86_64::*;
 use core::cell::OnceCell;
 use core::simd::f32x32;
+use half::f16;
 use lazy_static::lazy_static;
 use rayon::prelude::*;
 use std::simd::num::SimdFloat;
-
-use half::f16;
 
 const COEF_A: f32 = 0.044715;
 const SQRT_2_OVER_PI: f64 = 0.797_884_560_802_865_4;
@@ -95,6 +96,7 @@ fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
 //     sum
 // }
 
+#[cfg(not(target_feature = "avx2"))]
 #[inline(always)]
 unsafe fn vec_dot_f16(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
     *res = 0.0f32;
@@ -1527,6 +1529,38 @@ impl Map2 for Scale {
     }
 }
 
+struct GetRows;
+
+impl Map2 for GetRows {
+    const OP: &'static str = "get_rows";
+    fn f_Q40_I32_f32(
+        &self,
+        inp0: &[BlockQ4_0],
+        inp0_d: &Dim,
+        inp1: &[i32],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        let nc = inp0_d.dim1();
+        let nr = inp1_d.elem_count();
+        let (ne0, ne1) = dst_d.dim2();
+        let (_, nbv1) = inp0_d.stride_2d();
+        let (_, nbd1) = dst_d.stride_2d();
+        assert!(ne0 == nc);
+        assert!(ne1 == nr);
+        assert!(inp0_d.stride_1d() == 1);
+        for i in 0..nr {
+            let r = inp1[i] as usize;
+            BlockQ4_0::to_f32(
+                &inp0[r * nbv1..r * nbv1 + nc],
+                &mut dst[i * nbd1..i * nbd1 + nc],
+            )
+        }
+        Ok(())
+    }
+}
+
 pub fn galois_conv_1d_1s(kernel: &Tensor, src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
     match (kernel.device(), src.device(), dst_device) {
@@ -1670,6 +1704,19 @@ pub fn galois_scale(src0: &Tensor, src1: &Tensor, dst: &mut Tensor) -> GResult<(
     Ok(())
 }
 
+pub fn galois_get_rows(src0: &Tensor, src1: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src0.device(), src1.device(), dst_device) {
+        (Device::Cpu(s0), Device::Cpu(s1), Device::Cpu(d)) => {
+            GetRows.map(s0, src0.dim(), s1, src1.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
 trait Map {
     const OP: &'static str;
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()>;
@@ -1722,6 +1769,18 @@ trait Map2 {
         self.f(inp, inp_d, k, k_d, dst, dst_d)
     }
 
+    fn f_Q40_I32_f32(
+        &self,
+        inp0: &[BlockQ4_0],
+        inp0_d: &Dim,
+        inp1: &[i32],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
     fn f_f16_f32(
         &self,
         k: &[f16],
@@ -1752,6 +1811,9 @@ trait Map2 {
             }
             (CpuDevice::F16(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
                 self.f_f16_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+            }
+            (CpuDevice::Q4_0(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
+                self.f_Q40_I32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             _ => {
                 todo!()

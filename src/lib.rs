@@ -5,7 +5,7 @@
 
 mod broadcast;
 pub mod error;
-mod ggml_quants;
+pub mod ggml_quants;
 pub mod op;
 pub mod shape;
 mod simd;
@@ -20,6 +20,7 @@ use crate::shape::MAX_DIM;
 use crate::error::{GError, GResult};
 use crate::shape::Dim;
 pub use crate::shape::{Axis, Shape};
+
 use crate::zip::Zip;
 use core::ptr::{self, NonNull};
 use ggml_quants::QK4_0;
@@ -45,6 +46,7 @@ pub enum DType {
     F16,
     F32,
     F64,
+    I32,
     TypeCount,
 }
 
@@ -53,9 +55,10 @@ pub const GS_TYPE_SIZE: [usize; DType::TypeCount as usize] = [
     std::mem::size_of::<F16>(),
     std::mem::size_of::<f32>(),
     std::mem::size_of::<f64>(),
+    std::mem::size_of::<i32>(),
 ];
 
-pub const GS_BLCK_SIZE: [usize; DType::TypeCount as usize] = [QK4_0, 1, 1, 1];
+pub const GS_BLCK_SIZE: [usize; DType::TypeCount as usize] = [QK4_0, 1, 1, 1, 1];
 
 #[macro_export]
 macro_rules! impl_tousize {
@@ -158,6 +161,10 @@ impl TensorType for f32 {
 
 impl TensorType for f64 {
     const DTYPE: DType = DType::F64;
+}
+
+impl TensorType for i32 {
+    const DTYPE: DType = DType::I32;
 }
 
 impl TensorType for BlockQ4_0 {
@@ -502,7 +509,7 @@ impl<P: TensorType> RawData<P> {
         );
         let data = RawRef::from_raw_parts(
             raw.as_ptr() as *mut P,
-            nbytes * GS_BLCK_SIZE[P::DTYPE as usize] / GS_TYPE_SIZE[P::DTYPE as usize],
+            nbytes / GS_TYPE_SIZE[P::DTYPE as usize],
         );
         RawData::Ref(data)
     }
@@ -540,12 +547,12 @@ impl<P: TensorType> RawData<P> {
         };
     }
 
-    pub(crate) fn nbytes(&self) -> usize {
-        return match self {
-            RawData::Own(v) => v.nbytes(),
-            RawData::Ref(v) => v.nbytes(),
-        };
-    }
+    // pub(crate) fn nbytes(&self) -> usize {
+    //     return match self {
+    //         RawData::Own(v) => v.nbytes(),
+    //         RawData::Ref(v) => v.nbytes(),
+    //     };
+    // }
 
     pub(crate) fn len(&self) -> usize {
         return match self {
@@ -602,7 +609,7 @@ impl<P: TensorType> RawRef<P> {
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.ptr.as_ptr() as *mut u8,
-                self.len * GS_TYPE_SIZE[P::DTYPE as usize] / GS_BLCK_SIZE[P::DTYPE as usize],
+                self.len * GS_TYPE_SIZE[P::DTYPE as usize],
             )
         }
     }
@@ -611,7 +618,7 @@ impl<P: TensorType> RawRef<P> {
         unsafe {
             std::slice::from_raw_parts(
                 self.ptr.as_ptr() as *const u8,
-                self.len * GS_TYPE_SIZE[P::DTYPE as usize] / GS_BLCK_SIZE[P::DTYPE as usize],
+                self.len * GS_TYPE_SIZE[P::DTYPE as usize],
             )
         }
     }
@@ -633,9 +640,9 @@ impl<P: TensorType> RawRef<P> {
         }
     }
 
-    fn nbytes(&self) -> usize {
-        self.len * GS_TYPE_SIZE[P::DTYPE as usize] / GS_BLCK_SIZE[P::DTYPE as usize]
-    }
+    // fn nbytes(&self) -> usize {
+    //     self.len * GS_TYPE_SIZE[P::DTYPE as usize] / GS_BLCK_SIZE[P::DTYPE as usize]
+    // }
 }
 
 struct RawPtr<P: TensorType> {
@@ -872,6 +879,7 @@ pub enum CpuDevice {
     F16(RawData<f16>),
     F32(RawData<f32>),
     F64(RawData<f64>),
+    I32(RawData<i32>),
 }
 
 impl CpuDevice {
@@ -883,17 +891,19 @@ impl CpuDevice {
             CpuDevice::F16(v) => CpuDevice::F16(v.offset(i)),
             CpuDevice::F32(v) => CpuDevice::F32(v.offset(i)),
             CpuDevice::F64(v) => CpuDevice::F64(v.offset(i)),
+            CpuDevice::I32(v) => CpuDevice::I32(v.offset(i)),
         };
     }
 
-    pub(crate) fn nbytes(&self) -> usize {
-        return match self {
-            CpuDevice::Q4_0(v) => v.nbytes(),
-            CpuDevice::F16(v) => v.nbytes(),
-            CpuDevice::F32(v) => v.nbytes(),
-            CpuDevice::F64(v) => v.nbytes(),
-        };
-    }
+    // pub(crate) fn nbytes(&self) -> usize {
+    //     return match self {
+    //         CpuDevice::Q4_0(v) => v.nbytes(),
+    //         CpuDevice::F16(v) => v.nbytes(),
+    //         CpuDevice::F32(v) => v.nbytes(),
+    //         CpuDevice::F64(v) => v.nbytes(),
+    //         CpuDevice::I32(v) => v.nbytes(),
+    //     };
+    // }
 
     pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         return match self {
@@ -901,6 +911,7 @@ impl CpuDevice {
             CpuDevice::F16(v) => v.as_bytes_mut(),
             CpuDevice::F32(v) => v.as_bytes_mut(),
             CpuDevice::F64(v) => v.as_bytes_mut(),
+            CpuDevice::I32(v) => v.as_bytes_mut(),
         };
     }
 
@@ -910,6 +921,7 @@ impl CpuDevice {
             CpuDevice::F16(v) => v.as_bytes(),
             CpuDevice::F32(v) => v.as_bytes(),
             CpuDevice::F64(v) => v.as_bytes(),
+            CpuDevice::I32(v) => v.as_bytes(),
         };
     }
 
@@ -919,6 +931,7 @@ impl CpuDevice {
             CpuDevice::F16(v) => CpuDevice::F16(v.as_ref()),
             CpuDevice::F32(v) => CpuDevice::F32(v.as_ref()),
             CpuDevice::F64(v) => CpuDevice::F64(v.as_ref()),
+            CpuDevice::I32(v) => CpuDevice::I32(v.as_ref()),
         };
     }
 
@@ -928,6 +941,7 @@ impl CpuDevice {
             CpuDevice::F16(v) => v.len(),
             CpuDevice::F32(v) => v.len(),
             CpuDevice::F64(v) => v.len(),
+            CpuDevice::I32(v) => v.len(),
         };
     }
 
@@ -1020,14 +1034,14 @@ impl Device {
         };
     }
 
-    pub(crate) fn nbytes(&self) -> usize {
-        return match self {
-            Device::Cpu(v) => v.nbytes(),
-            Device::Gpu() => {
-                todo!()
-            }
-        };
-    }
+    // pub(crate) fn nbytes(&self) -> usize {
+    //     return match self {
+    //         Device::Cpu(v) => v.nbytes(),
+    //         Device::Gpu() => {
+    //             todo!()
+    //         }
+    //     };
+    // }
 
     pub(crate) fn offset(&self, i: usize) -> Device {
         return match self {
@@ -1156,7 +1170,7 @@ impl Tensor {
     }
 
     fn from_device(data: Device, n_dims: usize, shape: Shape, dtype: DType) -> Self {
-        let stride = shape.ggml_stride();
+        let stride = shape.ggml_stride(dtype);
         Self {
             dtype: dtype,
             data: data,
@@ -1280,6 +1294,12 @@ impl Tensor {
                 s,
                 dtype,
             ),
+            DType::I32 => Tensor::from_device(
+                Device::Cpu(CpuDevice::I32(RawData::from_bytes(v))),
+                n_dims,
+                s,
+                dtype,
+            ),
             _ => {
                 todo!()
             }
@@ -1287,7 +1307,8 @@ impl Tensor {
     }
 
     pub fn nbytes(&self) -> usize {
-        self.device().nbytes()
+        //self.device().nbytes()
+        self.elem_count() * GS_TYPE_SIZE[self.dtype as usize] / GS_BLCK_SIZE[self.dtype as usize]
     }
 
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
@@ -1301,14 +1322,15 @@ impl Tensor {
     pub unsafe fn as_slice<T>(&self) -> &[T] {
         let bytes = self.as_bytes();
         assert!(bytes.as_ptr() as usize % std::mem::align_of::<T>() == 0);
-        let len = bytes.len() / std::mem::size_of::<T>();
+        let len = bytes.len() / GS_TYPE_SIZE[self.dtype as usize]; //* GS_BLCK_SIZE[self.dtype as usize] /
         std::slice::from_raw_parts(bytes.as_ptr() as *mut T, len)
     }
 
     pub unsafe fn as_slice_mut<T>(&mut self) -> &mut [T] {
+        let dtype = self.dtype() as usize;
         let bytes = self.as_bytes_mut();
         assert!(bytes.as_ptr() as usize % std::mem::align_of::<T>() == 0);
-        let len = bytes.len() / std::mem::size_of::<T>();
+        let len = bytes.len() / GS_TYPE_SIZE[dtype]; //* GS_BLCK_SIZE[dtype]
         std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, len)
     }
 
