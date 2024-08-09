@@ -6,19 +6,19 @@ pub trait QuantType: Sized {
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
-#[repr(C, align(1))]
-pub struct BlockQ4_0 {
+#[repr(C)]
+pub struct BlockV1_Q4_0 {
     pub(crate) d: f32,
     pub(crate) qs: [u8; QK4_0 / 2],
 }
 
-impl BlockQ4_0 {
+impl BlockV1_Q4_0 {
     pub fn d(&self) -> f32 {
         self.d
     }
 }
 
-impl QuantType for BlockQ4_0 {
+impl QuantType for BlockV1_Q4_0 {
     const BLCK_SIZE: usize = QK4_0;
     fn to_f32(src: &[Self], dst: &mut [f32]) {
         let k = dst.len();

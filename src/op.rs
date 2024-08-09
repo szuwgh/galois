@@ -6,7 +6,7 @@ use crate::ggml_quants::QuantType;
 use crate::Device;
 use crate::GError;
 //use super::broadcast::{broadcasting_binary_op, general_broadcasting};
-use crate::BlockQ4_0;
+use crate::BlockV1_Q4_0;
 use crate::CpuDevice;
 use crate::Dim;
 use crate::Shape;
@@ -61,7 +61,14 @@ fn compute_gelu(v: f32) -> f32 {
 
 #[inline]
 fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
-    for i in 0..n {
+    let n32 = n & !(STEP - 1);
+    let scale = std::simd::f32x32::splat(v);
+    y[..n32].chunks_exact_mut(STEP).for_each(|d| {
+        let va = std::simd::f32x32::from_slice(d);
+        let va = va * scale;
+        va.copy_to_slice(d);
+    });
+    for i in n32..n {
         y[i] *= v;
     }
 }
@@ -867,6 +874,49 @@ impl Map for Norm {
     }
 }
 
+struct RmsNorm;
+
+impl Map for RmsNorm {
+    const OP: &'static str = "rms_norm";
+    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+        assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
+        let (ne00, ne01, ne02, ne03) = inp_d.dim4();
+        let (_, nb01, nb02, nb03) = inp_d.stride_4d();
+        let (_, nb1, nb2, nb3) = dst_d.stride_4d();
+        let eps: f32 = 1e-5;
+        for i03 in 0..ne03 {
+            for i02 in 0..ne02 {
+                for i01 in 0..ne01 {
+                    let x = &inp[i01 * nb01 + i02 * nb02 + i03 * nb03..];
+                    let n32 = ne00 & !(STEP - 1);
+                    let mut mean: f32 = x[..n32]
+                        .chunks_exact(STEP)
+                        .map(|chunk| {
+                            let mut v = f32x32::from_slice(chunk);
+                            v *= v;
+                            v.reduce_sum()
+                        })
+                        .sum();
+                    mean /= ne00 as f32;
+                    let y = &mut dst[i01 * nb1 + i02 * nb2 + i03 * nb3..];
+                    y[..ne00].copy_from_slice(&x[..ne00]);
+                    let scale = 1.0 / (mean + eps).sqrt();
+                    vec_scale_f32(ne00, y, scale);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+        todo!()
+    }
+}
+
 struct MatMul;
 
 impl MatMul {
@@ -1535,7 +1585,7 @@ impl Map2 for GetRows {
     const OP: &'static str = "get_rows";
     fn f_Q40_I32_f32(
         &self,
-        inp0: &[BlockQ4_0],
+        inp0: &[BlockV1_Q4_0],
         inp0_d: &Dim,
         inp1: &[i32],
         inp1_d: &Dim,
@@ -1552,7 +1602,7 @@ impl Map2 for GetRows {
         assert!(inp0_d.stride_1d() == 1);
         for i in 0..nr {
             let r = inp1[i] as usize;
-            BlockQ4_0::to_f32(
+            BlockV1_Q4_0::to_f32(
                 &inp0[r * nbv1..r * nbv1 + nc],
                 &mut dst[i * nbd1..i * nbd1 + nc],
             )
@@ -1657,6 +1707,19 @@ pub fn galois_norm(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     match (src.device(), dst_device) {
         (Device::Cpu(s), Device::Cpu(d)) => {
             Norm.map(s, src.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
+pub fn galois_rms_norm(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(d)) => {
+            RmsNorm.map(s, src.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -1771,7 +1834,7 @@ trait Map2 {
 
     fn f_Q40_I32_f32(
         &self,
-        inp0: &[BlockQ4_0],
+        inp0: &[BlockV1_Q4_0],
         inp0_d: &Dim,
         inp1: &[i32],
         inp1_d: &Dim,
@@ -1812,7 +1875,7 @@ trait Map2 {
             (CpuDevice::F16(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
                 self.f_f16_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
-            (CpuDevice::Q4_0(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
+            (CpuDevice::Q4V1_0(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
                 self.f_Q40_I32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             _ => {

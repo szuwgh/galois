@@ -29,7 +29,7 @@ use shape::ShapeIter;
 use std::fmt;
 use std::mem::forget;
 mod tensor;
-use crate::ggml_quants::BlockQ4_0;
+use crate::ggml_quants::BlockV1_Q4_0;
 use crate::shape::Layout;
 use half::f16;
 use num_traits::ToPrimitive;
@@ -42,7 +42,8 @@ pub type F16 = half::f16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
 pub enum DType {
-    Q4_0,
+    Q4V1_0,
+    Q4V2_0,
     F16,
     F32,
     F64,
@@ -52,13 +53,14 @@ pub enum DType {
 
 pub const GS_TYPE_SIZE: [usize; DType::TypeCount as usize] = [
     std::mem::size_of::<f32>() + QK4_0 / 2,
+    std::mem::size_of::<f32>() + QK4_0 / 2,
     std::mem::size_of::<F16>(),
     std::mem::size_of::<f32>(),
     std::mem::size_of::<f64>(),
     std::mem::size_of::<i32>(),
 ];
 
-pub const GS_BLCK_SIZE: [usize; DType::TypeCount as usize] = [QK4_0, 1, 1, 1, 1];
+pub const GS_BLCK_SIZE: [usize; DType::TypeCount as usize] = [QK4_0, QK4_0, 1, 1, 1, 1];
 
 #[macro_export]
 macro_rules! impl_tousize {
@@ -167,8 +169,8 @@ impl TensorType for i32 {
     const DTYPE: DType = DType::I32;
 }
 
-impl TensorType for BlockQ4_0 {
-    const DTYPE: DType = DType::Q4_0;
+impl TensorType for BlockV1_Q4_0 {
+    const DTYPE: DType = DType::Q4V1_0;
 }
 
 pub trait ToUsize {
@@ -875,7 +877,7 @@ impl<'a> TensorIter<'a> {
 
 #[derive(Clone)]
 pub enum CpuDevice {
-    Q4_0(RawData<BlockQ4_0>),
+    Q4V1_0(RawData<BlockV1_Q4_0>),
     F16(RawData<f16>),
     F32(RawData<f32>),
     F64(RawData<f64>),
@@ -887,7 +889,7 @@ impl CpuDevice {
 
     pub(crate) fn offset(&self, i: usize) -> CpuDevice {
         return match self {
-            CpuDevice::Q4_0(v) => CpuDevice::Q4_0(v.offset(i)),
+            CpuDevice::Q4V1_0(v) => CpuDevice::Q4V1_0(v.offset(i)),
             CpuDevice::F16(v) => CpuDevice::F16(v.offset(i)),
             CpuDevice::F32(v) => CpuDevice::F32(v.offset(i)),
             CpuDevice::F64(v) => CpuDevice::F64(v.offset(i)),
@@ -897,7 +899,7 @@ impl CpuDevice {
 
     // pub(crate) fn nbytes(&self) -> usize {
     //     return match self {
-    //         CpuDevice::Q4_0(v) => v.nbytes(),
+    //         CpuDevice::Q4V1_0(v) => v.nbytes(),
     //         CpuDevice::F16(v) => v.nbytes(),
     //         CpuDevice::F32(v) => v.nbytes(),
     //         CpuDevice::F64(v) => v.nbytes(),
@@ -907,7 +909,7 @@ impl CpuDevice {
 
     pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         return match self {
-            CpuDevice::Q4_0(v) => v.as_bytes_mut(),
+            CpuDevice::Q4V1_0(v) => v.as_bytes_mut(),
             CpuDevice::F16(v) => v.as_bytes_mut(),
             CpuDevice::F32(v) => v.as_bytes_mut(),
             CpuDevice::F64(v) => v.as_bytes_mut(),
@@ -917,7 +919,7 @@ impl CpuDevice {
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
         return match self {
-            CpuDevice::Q4_0(v) => v.as_bytes(),
+            CpuDevice::Q4V1_0(v) => v.as_bytes(),
             CpuDevice::F16(v) => v.as_bytes(),
             CpuDevice::F32(v) => v.as_bytes(),
             CpuDevice::F64(v) => v.as_bytes(),
@@ -927,7 +929,7 @@ impl CpuDevice {
 
     pub(crate) fn as_ref(&self) -> CpuDevice {
         return match self {
-            CpuDevice::Q4_0(v) => CpuDevice::Q4_0(v.as_ref()),
+            CpuDevice::Q4V1_0(v) => CpuDevice::Q4V1_0(v.as_ref()),
             CpuDevice::F16(v) => CpuDevice::F16(v.as_ref()),
             CpuDevice::F32(v) => CpuDevice::F32(v.as_ref()),
             CpuDevice::F64(v) => CpuDevice::F64(v.as_ref()),
@@ -937,7 +939,7 @@ impl CpuDevice {
 
     pub(crate) fn len(&self) -> usize {
         return match self {
-            CpuDevice::Q4_0(v) => v.len(),
+            CpuDevice::Q4V1_0(v) => v.len(),
             CpuDevice::F16(v) => v.len(),
             CpuDevice::F32(v) => v.len(),
             CpuDevice::F64(v) => v.len(),
@@ -1270,8 +1272,8 @@ impl Tensor {
 
     pub unsafe fn from_bytes(v: &[u8], n_dims: usize, s: Shape, dtype: DType) -> Self {
         match dtype {
-            DType::Q4_0 => Tensor::from_device(
-                Device::Cpu(CpuDevice::Q4_0(RawData::from_bytes(v))),
+            DType::Q4V1_0 => Tensor::from_device(
+                Device::Cpu(CpuDevice::Q4V1_0(RawData::from_bytes(v))),
                 n_dims,
                 s,
                 dtype,
