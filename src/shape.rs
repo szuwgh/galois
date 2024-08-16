@@ -1,8 +1,8 @@
-use crate::DType;
+use crate::GGmlType;
 
 use super::error::{GError, GResult, ShapeErrorKind};
 use crate::GS_BLCK_SIZE;
-pub(crate) const MAX_DIM: usize = 4;
+pub const MAX_DIM: usize = 4;
 
 pub(crate) fn zip<I, J>(i: I, j: J) -> std::iter::Zip<I::IntoIter, J::IntoIter>
 where
@@ -369,7 +369,7 @@ impl Shape {
         Shape::from_vec(vec![0usize; s])
     }
 
-    pub fn ggml_stride(&self, dtype: DType) -> [usize; 4] {
+    pub fn ggml_stride(&self, dtype: GGmlType) -> [usize; 4] {
         let mut x: [usize; 4] = [0usize; 4];
         x[0] = 1;
         x[1] = self.0[0] / GS_BLCK_SIZE[dtype as usize];
@@ -544,7 +544,7 @@ mod tests {
     fn test_shape_iter() {
         let d = Shape::from_vec(vec![3, 2]);
         // let mut i = d.iter(2);
-        let strides = &d.ggml_stride(DType::F16);
+        let strides = &d.ggml_stride(GGmlType::F16);
         println!("strides:{:?}", strides);
         println!("old strides:{:?}", d.nd_stride(2));
 

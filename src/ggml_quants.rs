@@ -1,3 +1,5 @@
+use half::f16;
+
 pub const QK4_0: usize = 32;
 
 pub trait QuantType: Sized {
@@ -43,5 +45,18 @@ impl QuantType for BlockV1_Q4_0 {
                 dst[i * qk + j + 1] = v1;
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Copy)]
+#[repr(C)]
+pub struct Block_Q4_0 {
+    pub(crate) d: f16,
+    pub(crate) qs: [u8; QK4_0 / 2],
+}
+
+impl Block_Q4_0 {
+    pub fn d(&self) -> f16 {
+        self.d
     }
 }
