@@ -9,6 +9,7 @@ pub mod ggml_quants;
 pub mod op;
 pub mod shape;
 mod simd;
+mod similarity;
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
@@ -33,6 +34,7 @@ use crate::ggml_quants::BlockV1_Q4_0;
 use crate::shape::Layout;
 use half::f16;
 use num_traits::ToPrimitive;
+use std::ops::Sub;
 pub type F16 = half::f16;
 
 // const STEP: usize = 128;
@@ -293,17 +295,6 @@ pub trait TensorType:
     //     }
     //     *c = sumf;
     // }
-}
-
-pub trait Similarity {
-    //欧式距离/欧几里得距离
-    fn euclidean() -> usize;
-    //
-    fn l2() -> usize;
-    fn cosine() -> usize;
-    fn hamming() -> usize;
-    fn jaccard() -> usize;
-    fn tanimoto() -> usize;
 }
 
 pub trait Zero: Clone {

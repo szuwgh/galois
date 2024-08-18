@@ -1,8 +1,8 @@
 use half::f16;
-
+use std::ops::Sub;
 pub const QK4_0: usize = 32;
 
-pub trait QuantType: Sized {
+pub trait QuantType: Sized + Sub {
     const BLCK_SIZE: usize;
     fn to_f32(src: &[Self], dst: &mut [f32]);
 }
@@ -20,8 +20,16 @@ impl BlockV1_Q4_0 {
     }
 }
 
+impl Sub for BlockV1_Q4_0 {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self::Output {
+        todo!()
+    }
+}
+
 impl QuantType for BlockV1_Q4_0 {
     const BLCK_SIZE: usize = QK4_0;
+
     fn to_f32(src: &[Self], dst: &mut [f32]) {
         let k = dst.len();
         let qk = Self::BLCK_SIZE;
