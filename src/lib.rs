@@ -9,7 +9,7 @@ pub mod ggml_quants;
 pub mod op;
 pub mod shape;
 mod simd;
-mod similarity;
+pub mod similarity;
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
@@ -34,7 +34,6 @@ use crate::ggml_quants::BlockV1_Q4_0;
 use crate::shape::Layout;
 use half::f16;
 use num_traits::ToPrimitive;
-use std::ops::Sub;
 pub type F16 = half::f16;
 
 // const STEP: usize = 128;
@@ -65,6 +64,35 @@ pub enum GGmlType {
     I16 = 17,
     I32 = 18,
     TypeCount = 19,
+}
+
+impl GGmlType {
+    pub fn from_usize(u: usize) -> Self {
+        match u {
+            0 => GGmlType::F32,
+            1 => GGmlType::F16,
+            2 => GGmlType::Q4_0,
+            3 => GGmlType::Q4_1,
+            // 4 => GGmlType::Q4_1,
+            // 5 => GGmlType::Q5_0,
+            6 => GGmlType::Q5_0,
+            7 => GGmlType::Q5_1,
+            8 => GGmlType::Q8_0,
+            9 => GGmlType::Q8_1,
+            10 => GGmlType::Q2K,
+            11 => GGmlType::Q3K,
+            12 => GGmlType::Q4K,
+            13 => GGmlType::Q5K,
+            14 => GGmlType::Q6K,
+            15 => GGmlType::Q8K,
+            16 => GGmlType::I8,
+            17 => GGmlType::I16,
+            18 => GGmlType::I32,
+            // 19 => GGmlType::F32,
+            //1 => GGmlType::F32,
+            _ => todo!(),
+        }
+    }
 }
 
 pub const GS_TYPE_SIZE: [usize; GGmlType::TypeCount as usize] = [
@@ -324,18 +352,6 @@ zero_impl!(f16, f16::from_f32(0.0));
 zero_impl!(f32, 0.0);
 zero_impl!(f64, 0.0);
 
-pub fn arr<A: TensorType>(xs: &[A]) -> Tensor {
-    Tensor::arr(xs.to_vec())
-}
-
-pub fn mat<A: TensorType, const N: usize>(xs: &[[A; N]]) -> Tensor {
-    Tensor::mat(xs.to_vec())
-}
-
-pub fn cube<A: TensorType, const N: usize, const M: usize>(xs: &[[[A; N]; M]]) -> Tensor {
-    Tensor::cube(xs.to_vec())
-}
-
 #[cold]
 #[cfg(not(no_global_oom_handling))]
 fn capacity_overflow() -> ! {
@@ -536,6 +552,22 @@ impl<P: TensorType> RawData<P> {
             nbytes / GS_TYPE_SIZE[P::DTYPE as usize],
         );
         RawData::Ref(data)
+    }
+
+    pub(crate) fn from_raw(raw: Vec<u8>) -> Self {
+        let nbytes = raw.len();
+        assert_eq!(
+            nbytes % GS_TYPE_SIZE[P::DTYPE as usize] / GS_BLCK_SIZE[P::DTYPE as usize],
+            0,
+            "Length of slice must be multiple of f32 size"
+        );
+        let data = RawPtr::from_raw_parts(
+            raw.as_ptr() as *mut P,
+            nbytes / GS_TYPE_SIZE[P::DTYPE as usize],
+            raw.capacity() / GS_TYPE_SIZE[P::DTYPE as usize],
+        );
+        forget(raw);
+        RawData::Own(data)
     }
 
     pub(crate) fn as_ref(&self) -> RawData<P> {
@@ -1172,21 +1204,47 @@ impl AsRef<Tensor> for Tensor {
 }
 
 impl Tensor {
-    fn arr<A: TensorType>(xs: Vec<A>) -> Self {
+    pub fn arr_array<A: TensorType, const N: usize>(xs: [A; N]) -> Tensor {
+        Tensor::arr(xs.to_vec())
+    }
+
+    pub fn mat_array<A: TensorType, const N: usize, const M: usize>(xs: [[A; N]; M]) -> Tensor {
+        Tensor::mat(xs.to_vec())
+    }
+
+    pub fn cube_array<A: TensorType, const N: usize, const M: usize, const K: usize>(
+        xs: [[[A; N]; M]; K],
+    ) -> Tensor {
+        Tensor::cube(xs.to_vec())
+    }
+
+    pub fn arr_slice<A: TensorType>(xs: &[A]) -> Tensor {
+        Tensor::arr(xs.to_vec())
+    }
+
+    pub fn mat_slice<A: TensorType, const N: usize>(xs: &[[A; N]]) -> Tensor {
+        Tensor::mat(xs.to_vec())
+    }
+
+    pub fn cube_slice<A: TensorType, const N: usize, const M: usize>(xs: &[[[A; N]; M]]) -> Tensor {
+        Tensor::cube(xs.to_vec())
+    }
+
+    pub fn arr<A: TensorType>(xs: Vec<A>) -> Self {
         let dim = [xs.len()];
         let shape = Shape::from_array(dim);
         let cpu_dev = xs.to_cpu_device();
         Tensor::from_device(Device::Cpu(cpu_dev), 1, shape, A::DTYPE)
     }
 
-    fn mat<A: TensorType, const N: usize>(xs: Vec<[A; N]>) -> Self {
+    pub fn mat<A: TensorType, const N: usize>(xs: Vec<[A; N]>) -> Self {
         let dim = [xs.len(), N];
         let shape = Shape::from_array(dim);
         let cpu_dev = xs.to_cpu_device();
         Tensor::from_device(Device::Cpu(cpu_dev), 2, shape, A::DTYPE)
     }
 
-    fn cube<A: TensorType, const M: usize, const N: usize>(xs: Vec<[[A; N]; M]>) -> Self {
+    pub fn cube<A: TensorType, const M: usize, const N: usize>(xs: Vec<[[A; N]; M]>) -> Self {
         let dim = [xs.len(), M, N];
         let shape = Shape::from_array(dim);
         let cpu_dev = xs.to_cpu_device();
@@ -1290,6 +1348,44 @@ impl Tensor {
     pub fn from_slice<A: TensorType>(v: &[A], n_dims: usize, s: Shape) -> Self {
         let cpu_dev = v.to_cpu_device();
         Tensor::from_device(Device::Cpu(cpu_dev), n_dims, s, A::DTYPE)
+    }
+
+    pub fn from_raw(v: Vec<u8>, n_dims: usize, s: Shape, dtype: GGmlType) -> Self {
+        match dtype {
+            GGmlType::Q4_0 => Tensor::from_device(
+                Device::Cpu(CpuDevice::Q4V1_0(RawData::from_raw(v))),
+                n_dims,
+                s,
+                dtype,
+            ),
+            GGmlType::F16 => Tensor::from_device(
+                Device::Cpu(CpuDevice::F16(RawData::from_raw(v))),
+                n_dims,
+                s,
+                dtype,
+            ),
+            GGmlType::F32 => Tensor::from_device(
+                Device::Cpu(CpuDevice::F32(RawData::from_raw(v))),
+                n_dims,
+                s,
+                dtype,
+            ),
+            // GGmlType::F64 => Tensor::from_device(
+            //     Device::Cpu(CpuDevice::F64(RawData::from_bytes(v))),
+            //     n_dims,
+            //     s,
+            //     dtype,
+            // ),
+            GGmlType::I32 => Tensor::from_device(
+                Device::Cpu(CpuDevice::I32(RawData::from_raw(v))),
+                n_dims,
+                s,
+                dtype,
+            ),
+            _ => {
+                todo!()
+            }
+        }
     }
 
     pub unsafe fn from_bytes(v: &[u8], n_dims: usize, s: Shape, dtype: GGmlType) -> Self {
@@ -2161,7 +2257,7 @@ mod tests {
 
     #[test]
     fn test_mat() {
-        let m = mat(&[[1.0, 2.0], [3.0, 4.0]]);
+        let m = Tensor::mat_slice(&[[1.0, 2.0], [3.0, 4.0]]);
         for i in m.iter() {
             println!("v:{:?}", i);
         }
@@ -2178,7 +2274,7 @@ mod tests {
 
     #[test]
     fn test_cude() {
-        let m = cube(&[
+        let m = Tensor::cube_slice(&[
             [[1.0, 2.0], [3.0, 4.0]],
             [[5.0, 6.0], [7.0, 8.0]],
             [[9.0, 10.0], [11.0, 12.0]],
@@ -2237,16 +2333,16 @@ mod tests {
 
     #[test]
     fn test_transpose() {
-        let m = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
+        let m = Tensor::cube_slice(&[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
         let m1 = m.into_transpose(1, 0).unwrap();
         println!("m1:{:?}", m1);
     }
 
     #[test]
     fn test_cat() {
-        let m1 = mat(&[[1.0, 2.0], [3.0, 4.0]]);
+        let m1 = Tensor::mat_slice(&[[1.0, 2.0], [3.0, 4.0]]);
 
-        let m2 = mat(&[[1.0, 2.0], [3.0, 4.0]]);
+        let m2 = Tensor::mat_slice(&[[1.0, 2.0], [3.0, 4.0]]);
 
         let m3 = Tensor::cat(&[&m1, &m2], 0).unwrap();
 
@@ -2261,13 +2357,13 @@ mod tests {
         println!("shape:{:?}", m4.dim());
         //    println!("slice:{:?}", m4.as_slice());
 
-        let m5 = mat(&[[1.0, 2.0, 1.0, 2.0], [3.0, 4.0, 3.0, 4.0]]);
+        let m5 = Tensor::mat_slice(&[[1.0, 2.0, 1.0, 2.0], [3.0, 4.0, 3.0, 4.0]]);
         println!("m5:{:?}", m5);
         println!("shape:{:?}", m5.dim());
         //   println!("slice:{:?}", m5.as_slice());
 
-        let m6 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
-        let m7 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let m6 = Tensor::cube_slice(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let m7 = Tensor::cube_slice(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
         let m8: Tensor = Tensor::cat(&[&m6, &m7], 2).unwrap();
         println!("m8:{:?}", m8);
         println!("shape:{:?}", m8.dim());
@@ -2276,7 +2372,7 @@ mod tests {
 
     #[test]
     fn test_pad() {
-        let m1 = cube(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
+        let m1 = Tensor::cube_slice(&[[[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0], [3.0, 4.0]]]);
         let d = m1.pad(2, 1, 1, 0.0).unwrap().pad(3, 0, 0, 0.0).unwrap();
         for x in d.iter() {
             println!("{:?}", x);
@@ -2313,7 +2409,7 @@ mod tests {
 
     #[test]
     fn test_sqrt() {
-        let m1 = cube(&[[[4.0, 16.0], [3.0, 4.0]], [[4.0, 9.0], [36.0, 81.0]]]);
+        let m1 = Tensor::cube_slice(&[[[4.0, 16.0], [3.0, 4.0]], [[4.0, 9.0], [36.0, 81.0]]]);
         //let s = m1.sqrt();
         println!("{:?}", m1);
         // println!("{:?}", s);
@@ -2321,7 +2417,7 @@ mod tests {
 
     #[test]
     fn test_narrow() -> GResult<()> {
-        let a = mat(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
+        let a = Tensor::mat_slice(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
         let b = a.narrow(0, 0, 2)?;
         println!("b:{:?}", b);
 
@@ -2332,7 +2428,7 @@ mod tests {
 
     #[test]
     fn test_chunk() -> GResult<()> {
-        let a = mat(&[
+        let a = Tensor::mat_slice(&[
             [0.0, 1.0, 2.0, 3.0],
             [4.0, 5.0, 6.0, 7.0],
             [8.0, 9.0, 10.0, 11.0],
@@ -2352,7 +2448,7 @@ mod tests {
 
     #[test]
     fn test_clone() -> GResult<()> {
-        let mut a = mat(&[
+        let mut a = Tensor::mat_slice(&[
             [0.0, 1.0, 2.0, 3.0],
             [4.0, 5.0, 6.0, 7.0],
             [8.0, 9.0, 10.0, 11.0],

@@ -31,7 +31,7 @@ impl BinaryOp for f32 {
 
 pub trait Similarity {
     // 欧式距离/欧几里得距离
-    fn euclidean(&self, other: &Self) -> GResult<f32>;
+    fn euclidean(&self, other: &Self) -> f32;
     // 曼哈顿距离
     fn manhattan(&self) -> f32;
     // 余弦相似度
@@ -41,9 +41,9 @@ pub trait Similarity {
 }
 
 trait Map {
-    fn f<T: BinaryOp + UnaryOp>(&self, left: &[T], right: &[T]) -> GResult<f32>;
+    fn f<T: BinaryOp + UnaryOp>(&self, left: &[T], right: &[T]) -> f32;
 
-    fn map(&self, left: &CpuDevice, right: &CpuDevice) -> GResult<f32> {
+    fn map(&self, left: &CpuDevice, right: &CpuDevice) -> f32 {
         match (left, right) {
             // (CpuDevice::F16(v1), CpuDevice::F16(d)) => self.f(v1.as_slice(), d.as_slice()),
             (CpuDevice::F32(v1), CpuDevice::F32(d)) => self.f(v1.as_slice(), d.as_slice()),
@@ -57,19 +57,17 @@ trait Map {
 struct Euclidean;
 
 impl Map for Euclidean {
-    fn f<T: BinaryOp + UnaryOp>(&self, left: &[T], right: &[T]) -> GResult<f32> {
-        let a = left
-            .iter()
+    fn f<T: BinaryOp + UnaryOp>(&self, left: &[T], right: &[T]) -> f32 {
+        left.iter()
             .zip(right.iter())
             .map(|(x, y)| x.sub(y).op_powi(2).to_f32())
             .sum::<f32>()
-            .sqrt();
-        Ok(a)
+            .sqrt()
     }
 }
 
 impl Similarity for Tensor {
-    fn euclidean(&self, other: &Self) -> GResult<f32> {
+    fn euclidean(&self, other: &Self) -> f32 {
         match (self.device(), other.device()) {
             (Device::Cpu(a), Device::Cpu(b)) => Euclidean.map(a, b),
             _ => {
@@ -103,7 +101,7 @@ mod tests {
         println!("a{:?}", a);
         let b = Tensor::from_vec(vec![4.0f32, 5.0, 6.0], 1, Shape::from_array([3]));
         println!("a{:?}", b);
-        let d = a.euclidean(&b).unwrap();
+        let d = a.euclidean(&b);
         println!("d:{}", d)
     }
 }

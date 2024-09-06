@@ -1937,7 +1937,6 @@ mod tests {
     use half::vec;
 
     use super::*;
-    use crate::mat;
 
     //  [[ F32(7.0), F32(10.0), F32(14.0)],
     //  [ F32(15.0), F32(22.0), F32(32.0)],
@@ -1956,8 +1955,8 @@ mod tests {
     */
     #[test]
     fn test_matmul_f32() {
-        let a = mat(&[[1.0f32, 3.0, 5.0], [7.0f32, 9.0, 11.0]]);
-        let b = mat(&[[2.0f32, 4.0], [6.0f32, 8.0], [10.0f32, 12.0]]);
+        let a = Tensor::mat_slice(&[[1.0f32, 3.0, 5.0], [7.0f32, 9.0, 11.0]]);
+        let b = Tensor::mat_slice(&[[2.0f32, 4.0], [6.0f32, 8.0], [10.0f32, 12.0]]);
         println!("a{:?}", a.shape());
         println!("b{:?}", b.shape());
         // let ne = [

@@ -87,16 +87,15 @@ mod tests {
 
         //println!("c:{:?}", c);
     }
-    use crate::mat;
     #[test] //[3, 2]
     fn test_zip() {
-        let m1 = mat(&[
+        let m1 = Tensor::mat_slice(&[
             [0.0, 0.0, 0.0],
             [1.0, 1.0, 1.0],
             [2.0, 2.0, 2.0],
             [3.0, 3.0, 3.0],
         ]);
-        let m2 = mat(&[
+        let m2 = Tensor::mat_slice(&[
             [0.0, 0.0, 0.0],
             [1.0, 1.0, 1.0],
             [2.0, 2.0, 2.0],
