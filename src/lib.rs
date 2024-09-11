@@ -1090,15 +1090,6 @@ impl Device {
         };
     }
 
-    // pub(crate) fn nbytes(&self) -> usize {
-    //     return match self {
-    //         Device::Cpu(v) => v.nbytes(),
-    //         Device::Gpu() => {
-    //             todo!()
-    //         }
-    //     };
-    // }
-
     pub(crate) fn offset(&self, i: usize) -> Device {
         return match self {
             Device::Cpu(v) => Device::Cpu(v.offset(i)),
@@ -1439,17 +1430,27 @@ impl Tensor {
         self.device().as_bytes()
     }
 
+    pub fn to_vec<T>(&self) -> Vec<T> {
+        let bytes = self.as_bytes();
+        assert!(bytes.len() as usize % GS_TYPE_SIZE[self.dtype as usize] == 0);
+        let len = bytes.len() / GS_TYPE_SIZE[self.dtype as usize]; //* GS_BLCK_SIZE[self.dtype as usize] /
+        let b = bytes.to_vec();
+        let v = unsafe { Vec::from_raw_parts(b.as_ptr() as *mut T, len, len) };
+        forget(b);
+        v
+    }
+
     pub unsafe fn as_slice<T>(&self) -> &[T] {
         let bytes = self.as_bytes();
-        assert!(bytes.as_ptr() as usize % std::mem::align_of::<T>() == 0);
+        assert!(bytes.len() as usize % GS_TYPE_SIZE[self.dtype as usize] == 0);
         let len = bytes.len() / GS_TYPE_SIZE[self.dtype as usize]; //* GS_BLCK_SIZE[self.dtype as usize] /
-        std::slice::from_raw_parts(bytes.as_ptr() as *mut T, len)
+        std::slice::from_raw_parts(bytes.as_ptr() as *const T, len)
     }
 
     pub unsafe fn as_slice_mut<T>(&mut self) -> &mut [T] {
         let dtype = self.dtype() as usize;
         let bytes = self.as_bytes_mut();
-        assert!(bytes.as_ptr() as usize % std::mem::align_of::<T>() == 0);
+        assert!(bytes.len() as usize % GS_TYPE_SIZE[dtype as usize] == 0);
         let len = bytes.len() / GS_TYPE_SIZE[dtype]; //* GS_BLCK_SIZE[dtype]
         std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, len)
     }

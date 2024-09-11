@@ -3,8 +3,8 @@ use crate::Device;
 use crate::GResult;
 use crate::Tensor;
 use crate::TensorType;
+use core::arch::x86_64::*;
 use std::ops::Sub;
-
 trait UnaryOp {
     fn op_powi(&self, n: i32) -> Self;
     fn to_f32(&self) -> f32;
@@ -43,10 +43,12 @@ pub trait Similarity {
 trait Map {
     fn f<T: BinaryOp + UnaryOp>(&self, left: &[T], right: &[T]) -> f32;
 
+    fn f32(&self, left: &[f32], right: &[f32]) -> f32;
+
     fn map(&self, left: &CpuDevice, right: &CpuDevice) -> f32 {
         match (left, right) {
             // (CpuDevice::F16(v1), CpuDevice::F16(d)) => self.f(v1.as_slice(), d.as_slice()),
-            (CpuDevice::F32(v1), CpuDevice::F32(d)) => self.f(v1.as_slice(), d.as_slice()),
+            (CpuDevice::F32(v1), CpuDevice::F32(d)) => self.f32(v1.as_slice(), d.as_slice()),
             _ => {
                 todo!()
             }
@@ -57,6 +59,43 @@ trait Map {
 struct Euclidean;
 
 impl Map for Euclidean {
+    fn f32(&self, left: &[f32], right: &[f32]) -> f32 {
+        unsafe {
+            let len = left.len();
+            let mut i = 0;
+
+            // 初始化一个 AVX 向量用于存储平方和
+            let mut sum = _mm256_setzero_ps();
+
+            while i + 8 <= len {
+                let left_chunk = _mm256_loadu_ps(left.as_ptr().add(i));
+                let right_chunk = _mm256_loadu_ps(right.as_ptr().add(i));
+
+                let diff = _mm256_sub_ps(left_chunk, right_chunk);
+
+                let diff_squared = _mm256_mul_ps(diff, diff);
+
+                sum = _mm256_add_ps(sum, diff_squared);
+
+                i += 8;
+            }
+
+            let mut tail_sum = 0.0;
+            while i < len {
+                let diff = left[i] - right[i];
+                tail_sum += diff * diff;
+                i += 1;
+            }
+
+            let mut sum_array = [0.0; 8];
+            _mm256_storeu_ps(sum_array.as_mut_ptr(), sum);
+
+            let simd_sum: f32 = sum_array.iter().sum();
+
+            (simd_sum + tail_sum).sqrt()
+        }
+    }
+
     fn f<T: BinaryOp + UnaryOp>(&self, left: &[T], right: &[T]) -> f32 {
         left.iter()
             .zip(right.iter())
@@ -97,9 +136,21 @@ mod tests {
 
     #[test]
     fn test_euclidean() {
-        let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], 1, Shape::from_array([3]));
+        let a = Tensor::from_vec(
+            vec![
+                1.0f32, 2.0, 3.0, 1.0f32, 2.0, 3.0, 1.0f32, 2.0, 3.0, 1.0f32, 2.0, 3.0,
+            ],
+            1,
+            Shape::from_array([12]),
+        );
         println!("a{:?}", a);
-        let b = Tensor::from_vec(vec![4.0f32, 5.0, 6.0], 1, Shape::from_array([3]));
+        let b = Tensor::from_vec(
+            vec![
+                4.0f32, 5.0, 6.0, 4.0f32, 5.0, 6.0, 4.0f32, 5.0, 6.0, 4.0f32, 5.0, 6.0,
+            ],
+            1,
+            Shape::from_array([12]),
+        );
         println!("a{:?}", b);
         let d = a.euclidean(&b);
         println!("d:{}", d)
