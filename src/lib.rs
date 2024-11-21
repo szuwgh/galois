@@ -2,7 +2,7 @@
 #![feature(non_null_convenience)]
 #![feature(portable_simd)]
 #![feature(slice_as_chunks)]
-
+use crate::ggml_quants::QK_K;
 mod broadcast;
 pub mod error;
 pub mod ggml_quants;
@@ -16,26 +16,24 @@ use core::arch::x86::*;
 use core::arch::x86_64::*;
 mod zip;
 extern crate alloc;
-use crate::shape::MAX_DIM;
-
 use crate::error::{GError, GResult};
+use crate::ggml_quants::BlockQ4_0;
+use crate::ggml_quants::QK8_0;
 use crate::shape::Dim;
+use crate::shape::MAX_DIM;
 pub use crate::shape::{Axis, Shape};
-
 use crate::zip::Zip;
 use core::ptr::{self, NonNull};
-use ggml_quants::QK4_0;
+use ggml_quants::{BlockQ6K, BlockQ8_0, QK4_0};
 use op::UnaryOp;
 use shape::ShapeIter;
 use std::fmt;
 use std::mem::forget;
 mod tensor;
-use crate::ggml_quants::BlockV1_Q4_0;
 use crate::shape::Layout;
 use half::f16;
 use num_traits::ToPrimitive;
 pub type F16 = half::f16;
-
 // const STEP: usize = 128;
 // const EPR: usize = 32;
 // const ARR: usize = STEP / EPR;
@@ -73,10 +71,11 @@ impl GGmlType {
             1 => GGmlType::F16,
             2 => GGmlType::Q4_0,
             3 => GGmlType::Q4_1,
-            // 4 => GGmlType::Q4_1,
-            // 5 => GGmlType::Q5_0,
+            // 4 => GGmlType::Q4_2,
+            // 5 => GGmlType::Q4_3,
             6 => GGmlType::Q5_0,
             7 => GGmlType::Q5_1,
+
             8 => GGmlType::Q8_0,
             9 => GGmlType::Q8_1,
             10 => GGmlType::Q2K,
@@ -96,29 +95,47 @@ impl GGmlType {
 }
 
 pub const GS_TYPE_SIZE: [usize; GGmlType::TypeCount as usize] = [
-    std::mem::size_of::<f32>(),
-    std::mem::size_of::<F16>(),
-    std::mem::size_of::<F16>() + QK4_0 / 2,
-    std::mem::size_of::<f32>() + QK4_0 / 2,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    std::mem::size_of::<i32>(),
+    std::mem::size_of::<f32>(),       //F32
+    std::mem::size_of::<F16>(),       //F16
+    std::mem::size_of::<BlockQ4_0>(), //Q4_0
+    0,                                //Q4_1
+    0,                                //Q4_2
+    0,                                //Q4_3
+    0,                                //Q5_0
+    0,                                //Q5_1
+    std::mem::size_of::<BlockQ6K>(),  //Q6K
+    std::mem::size_of::<BlockQ8_0>(), //Q8_0
+    0,                                //Q8_1
+    0,                                //Q2K
+    0,                                //Q3K
+    0,                                //Q4K
+    0,                                //Q5K
+    0,                                //Q8K
+    0,                                //I8
+    0,                                //I16
+    std::mem::size_of::<i32>(),       //i32
 ];
 
 pub const GS_BLCK_SIZE: [usize; GGmlType::TypeCount as usize] = [
-    1, 1, QK4_0, QK4_0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1,     // F32
+    1,     //F16
+    QK4_0, //Q4_0
+    QK4_0, //Q4_1
+    1,     //Q4_2
+    1,     //Q4_3
+    1,     //Q5_0
+    1,     //Q5_1
+    QK_K,  //Q6K
+    QK8_0, //Q8_0
+    1,     //Q8_1
+    1,     //Q2K
+    1,     //Q3K
+    1,     //Q4K
+    1,     //Q5K
+    1,     //Q8K
+    1,     //I8
+    1,     //I16
+    1,     //i32
 ];
 
 #[macro_export]
@@ -228,7 +245,7 @@ impl TensorType for i32 {
     const DTYPE: GGmlType = GGmlType::I32;
 }
 
-impl TensorType for BlockV1_Q4_0 {
+impl TensorType for BlockQ4_0 {
     const DTYPE: GGmlType = GGmlType::Q4_0;
 }
 
@@ -931,7 +948,7 @@ impl<'a> TensorIter<'a> {
 
 #[derive(Clone)]
 pub enum CpuDevice {
-    Q4V1_0(RawData<BlockV1_Q4_0>),
+    Q4_0(RawData<BlockQ4_0>),
     F16(RawData<f16>),
     F32(RawData<f32>),
     //  F64(RawData<f64>),
@@ -943,7 +960,7 @@ impl CpuDevice {
 
     pub(crate) fn offset(&self, i: usize) -> CpuDevice {
         return match self {
-            CpuDevice::Q4V1_0(v) => CpuDevice::Q4V1_0(v.offset(i)),
+            CpuDevice::Q4_0(v) => CpuDevice::Q4_0(v.offset(i)),
             CpuDevice::F16(v) => CpuDevice::F16(v.offset(i)),
             CpuDevice::F32(v) => CpuDevice::F32(v.offset(i)),
             //  CpuDevice::F64(v) => CpuDevice::F64(v.offset(i)),
@@ -963,7 +980,7 @@ impl CpuDevice {
 
     pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         return match self {
-            CpuDevice::Q4V1_0(v) => v.as_bytes_mut(),
+            CpuDevice::Q4_0(v) => v.as_bytes_mut(),
             CpuDevice::F16(v) => v.as_bytes_mut(),
             CpuDevice::F32(v) => v.as_bytes_mut(),
             // CpuDevice::F64(v) => v.as_bytes_mut(),
@@ -973,7 +990,7 @@ impl CpuDevice {
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
         return match self {
-            CpuDevice::Q4V1_0(v) => v.as_bytes(),
+            CpuDevice::Q4_0(v) => v.as_bytes(),
             CpuDevice::F16(v) => v.as_bytes(),
             CpuDevice::F32(v) => v.as_bytes(),
             // CpuDevice::F64(v) => v.as_bytes(),
@@ -983,7 +1000,7 @@ impl CpuDevice {
 
     pub(crate) fn as_ref(&self) -> CpuDevice {
         return match self {
-            CpuDevice::Q4V1_0(v) => CpuDevice::Q4V1_0(v.as_ref()),
+            CpuDevice::Q4_0(v) => CpuDevice::Q4_0(v.as_ref()),
             CpuDevice::F16(v) => CpuDevice::F16(v.as_ref()),
             CpuDevice::F32(v) => CpuDevice::F32(v.as_ref()),
             //  CpuDevice::F64(v) => CpuDevice::F64(v.as_ref()),
@@ -993,7 +1010,7 @@ impl CpuDevice {
 
     pub(crate) fn len(&self) -> usize {
         return match self {
-            CpuDevice::Q4V1_0(v) => v.len(),
+            CpuDevice::Q4_0(v) => v.len(),
             CpuDevice::F16(v) => v.len(),
             CpuDevice::F32(v) => v.len(),
             //CpuDevice::F64(v) => v.len(),
@@ -1181,6 +1198,8 @@ impl Device {
     // }
 }
 
+unsafe impl Send for Tensor {}
+
 #[derive(Clone)]
 pub struct Tensor {
     dtype: GGmlType,
@@ -1344,7 +1363,7 @@ impl Tensor {
     pub fn from_raw(v: Vec<u8>, n_dims: usize, s: Shape, dtype: GGmlType) -> Self {
         match dtype {
             GGmlType::Q4_0 => Tensor::from_device(
-                Device::Cpu(CpuDevice::Q4V1_0(RawData::from_raw(v))),
+                Device::Cpu(CpuDevice::Q4_0(RawData::from_raw(v))),
                 n_dims,
                 s,
                 dtype,
@@ -1382,7 +1401,7 @@ impl Tensor {
     pub unsafe fn from_bytes(v: &[u8], n_dims: usize, s: Shape, dtype: GGmlType) -> Self {
         match dtype {
             GGmlType::Q4_0 => Tensor::from_device(
-                Device::Cpu(CpuDevice::Q4V1_0(RawData::from_bytes(v))),
+                Device::Cpu(CpuDevice::Q4_0(RawData::from_bytes(v))),
                 n_dims,
                 s,
                 dtype,
@@ -1412,6 +1431,7 @@ impl Tensor {
                 dtype,
             ),
             _ => {
+                println!("dtype not found {:?}", dtype);
                 todo!()
             }
         }
@@ -1452,6 +1472,12 @@ impl Tensor {
         let bytes = self.as_bytes_mut();
         assert!(bytes.len() as usize % GS_TYPE_SIZE[dtype as usize] == 0);
         let len = bytes.len() / GS_TYPE_SIZE[dtype]; //* GS_BLCK_SIZE[dtype]
+                                                     // println!(
+                                                     //     "bytes len:{},len:{},GS_TYPE_SIZE:{}",
+                                                     //     bytes.len(),
+                                                     //     len,
+                                                     //     GS_TYPE_SIZE[dtype]
+                                                     // );
         std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, len)
     }
 

@@ -1,4 +1,5 @@
 use core::time;
+use std::collections::VecDeque;
 use std::ops::Neg;
 
 use crate::error::GResult;
@@ -6,10 +7,9 @@ use crate::ggml_quants::QuantType;
 use crate::Device;
 use crate::GError;
 //use super::broadcast::{broadcasting_binary_op, general_broadcasting};
-use crate::BlockV1_Q4_0;
+use crate::ggml_quants::BlockQ4_0;
 use crate::CpuDevice;
 use crate::Dim;
-use crate::Shape;
 use crate::Tensor;
 use crate::TensorType;
 #[cfg(target_arch = "x86")]
@@ -50,6 +50,11 @@ fn vec_cpy<T: Copy>(n: usize, y: &mut [T], x: &[T]) {
 
 #[inline]
 fn is_same_shape(a: &[usize], b: &[usize]) -> bool {
+    a == b
+}
+
+#[inline]
+fn can_repeat_rows(a: &[usize], b: &[usize]) -> bool {
     a == b
 }
 
@@ -171,45 +176,6 @@ unsafe fn vec_dot_f16(x: *const f16, y: *const f16, c: *mut f32, k: usize) {
         sumf += (*x.add(i)).to_f32() * (*y.add(i)).to_f32();
     }
     *c = sumf;
-    // let mut sumf = 0.0f32;
-    // let np = k & !(STEP - 1);
-
-    // let mut sum = [_mm256_setzero_ps(); ARR];
-    // let mut ax = [_mm256_setzero_ps(); ARR];
-    // let mut ay = [_mm256_setzero_ps(); ARR];
-
-    // for i in (0..np).step_by(STEP) {
-    //     for j in 0..ARR {
-    //         ax[j] = _mm256_cvtph_ps(_mm_loadu_si128(a_row.add(i + j * EPR) as *const __m128i));
-    //         ay[j] = _mm256_cvtph_ps(_mm_loadu_si128(b_row.add(i + j * EPR) as *const __m128i));
-
-    //         sum[j] = _mm256_add_ps(_mm256_mul_ps(ax[j], ay[j]), sum[j]);
-    //     }
-    // }
-
-    // let mut offset = ARR >> 1;
-    // for i in 0..offset {
-    //     sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
-    // }
-    // offset >>= 1;
-    // for i in 0..offset {
-    //     sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
-    // }
-    // offset >>= 1;
-    // for i in 0..offset {
-    //     sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
-    // }
-    // let t0 = _mm_add_ps(
-    //     _mm256_castps256_ps128(sum[0]),
-    //     _mm256_extractf128_ps(sum[0], 1),
-    // );
-    // let t1 = _mm_hadd_ps(t0, t0);
-    // sumf = _mm_cvtss_f32(_mm_hadd_ps(t1, t1));
-    // // leftovers
-    // for i in np..k {
-    //     sumf += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
-    // }
-    // *c = sumf;
 }
 
 unsafe impl Sync for CpuDeviceCache {}
@@ -373,6 +339,18 @@ impl Map2 for Add {
 
         Ok(())
     }
+
+    fn f_quant_f32<T: QuantType>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
 }
 
 struct Mul;
@@ -388,53 +366,96 @@ impl Map2 for Mul {
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
+        println!(
+            "{:?},{:?},{:?}",
+            inp1_d.shape(),
+            inp2_d.shape(),
+            dst_d.shape()
+        );
         assert!(
-            is_same_shape(inp1_d.shape(), inp2_d.shape())
-                && is_same_shape(inp1_d.shape(), dst_d.shape())
+            // is_same_shape(inp1_d.shape(), inp2_d.shape())
+            is_same_shape(inp1_d.shape(), dst_d.shape())
         );
         let time1 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        // let n = inp1_d.nrows();
-        // let nc = inp1_d.dim1();
+        let n = inp1_d.nrows();
+        let nc = inp1_d.dim1();
 
-        let nb00 = inp1_d.stride_1d();
+        // let nb00 = inp1_d.stride_1d();
 
-        let nb10 = inp2_d.stride_1d();
+        // let nb10 = inp2_d.stride_1d();
 
-        let nb0 = dst_d.stride_1d();
+        // let nb0 = dst_d.stride_1d();
 
+        let (ne00, ne01, ne02, ne03) = inp1_d.dim4();
+        let (ne10, ne11, ne12, ne13) = inp2_d.dim4();
+
+        let (nb00, nb01, nb02, nb03) = inp1_d.stride_4d();
+
+        let (nb10, nb11, nb12, nb13) = inp2_d.stride_4d();
+
+        let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+        let nr = ne01 * ne02 * ne03;
         assert!(nb00 == 1);
         assert!(nb10 == 1);
         assert!(nb0 == 1);
-        simd_vec_mul_f32(inp1, inp2, dst);
-        // if nb10 == 1 {
-        //     simd_vec_add_f32(inp1, inp2, dst);
-        // } else {
-        //     // for j in 0..n {
-        //     //     let dst_ptr = &mut dst[j * nb1..];
-        //     //     let src0_ptr = &inp1[j * nb01..];
-        //     //     for i in 0..nc {
-        //     //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
-        //     //     }
-        //     // }
+        let ith: usize = 0;
+        let nth: usize = 1;
+        // simd_vec_mul_f32(inp1, inp2, dst);
+        if nb10 == 1 {
+            for ir in 0..nr {
+                let i03 = ir / (ne02 * ne01);
+                let i02 = (ir - i03 * ne02 * ne01) / ne01;
+                let i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
 
-        //     dst.par_chunks_mut(nb1)
-        //         .enumerate()
-        //         .for_each(|(j, dst_ptr)| {
-        //             let src0_ptr = &inp1[j * nb01..];
-        //             for i in 0..nc {
-        //                 dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
-        //             }
-        //         });
-        // }
+                let i13 = i03 % ne13;
+                let i12 = i02 % ne12;
+                let i11 = i01 % ne11;
+
+                let dst_ptr = &mut dst[i03 * nb3 + i02 * nb2 + i01 * nb1..];
+                let src0_ptr = &inp1[i03 * nb03 + i02 * nb02 + i01 * nb01..];
+                let src1_ptr = &inp2[i13 * nb13 + i12 * nb12 + i11 * nb11..];
+
+                simd_vec_mul_f32(src0_ptr, src1_ptr, dst_ptr);
+            }
+        } else {
+            // for j in 0..n {
+            //     let dst_ptr = &mut dst[j * nb1..];
+            //     let src0_ptr = &inp1[j * nb01..];
+            //     for i in 0..nc {
+            //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
+            //     }
+            // }
+
+            // dst.par_chunks_mut(nb1)
+            //     .enumerate()
+            //     .for_each(|(j, dst_ptr)| {
+            //         let src0_ptr = &inp1[j * nb01..];
+            //         for i in 0..nc {
+            //             dst_ptr[i] = src0_ptr[i] * inp2[j * nb11 + i * nb10];
+            //         }
+            //     });
+        }
         let time2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
         println!("{} time:{} ms", Self::OP, time2 - time1);
         Ok(())
+    }
+
+    fn f_quant_f32<T: QuantType>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
     }
 }
 
@@ -595,6 +616,18 @@ impl Map2 for Conv1D1S {
 
         Ok(())
     }
+
+    fn f_quant_f32<T: QuantType>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
 }
 
 struct Conv1D2S;
@@ -743,6 +776,18 @@ impl Map2 for Conv1D2S {
             .as_millis();
         println!("{} time:{} ms", Self::OP, time2 - time1);
         Ok(())
+    }
+
+    fn f_quant_f32<T: QuantType>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
     }
 }
 
@@ -919,104 +964,6 @@ impl Map for RmsNorm {
 
 struct MatMul;
 
-impl MatMul {
-    fn can_use_gemm(&self, lhs_l: &Dim, rhs_l: &Dim) -> bool {
-        // TODO: find the optimal values for these
-        if lhs_l.ggml_is_contiguous() && rhs_l.ggml_is_contiguous() {
-            return true;
-        }
-        return false;
-    }
-
-    fn compute_mul_mat_use_gemm<T: TensorType>(
-        &self,
-        lhs: &[T],
-        lhs_l: &Dim,
-        rhs: &[T],
-        rhs_l: &Dim,
-        dst: &mut [T],
-        (batching, m, n, k): (usize, usize, usize, usize),
-    ) -> GResult<()> {
-        // let (b, m, n, k) = (batching, m, n, k);
-        // let lhs_stride = lhs_l.nd_stride();
-        // let rhs_stride = rhs_l.nd_stride();
-        // let rank = lhs_l.n_dims();
-        // let lhs_cs = lhs_stride[rank - 1];
-        // let lhs_rs = lhs_stride[rank - 2];
-
-        // let rhs_cs = rhs_stride[rank - 1];
-        // let rhs_rs = rhs_stride[rank - 2];
-
-        // let a_skip: usize = match lhs_stride[..rank - 2] {
-        //     [s1, stride] if s1 == stride * lhs_l.shape()[1] => stride,
-        //     [stride] => stride,
-        //     [] => m * k,
-        //     _ => {
-        //         return Err(GError::MatMulUnexpectedStriding {
-        //             lhs_l: lhs_l.clone(),
-        //             rhs_l: rhs_l.clone(),
-        //             bmnk: (b, m, n, k),
-        //             msg: "non-contiguous lhs",
-        //         });
-        //     }
-        // };
-        // let b_skip: usize = match rhs_stride[..rank - 2] {
-        //     [s1, stride] if s1 == stride * rhs_l.shape()[1] => stride,
-        //     [stride] => stride,
-        //     [] => n * k,
-        //     _ => {
-        //         return Err(GError::MatMulUnexpectedStriding {
-        //             lhs_l: lhs_l.clone(),
-        //             rhs_l: rhs_l.clone(),
-        //             bmnk: (b, m, n, k),
-        //             msg: "non-contiguous lhs",
-        //         });
-        //     }
-        // };
-        // let c_skip: usize = m * n;
-        // let dst_shape: Shape = Shape::from_array([m, n]);
-        // let dst_strides = dst_shape.stride_contiguous();
-        // let dst_rs = dst_strides[0];
-        // let dst_cs = dst_strides[1];
-        // //let mut dst = vec![T::zero(); b * m * n];
-        // let num_threads = num_cpus::get();
-        // let parallelism = if num_threads > 1 {
-        //     Parallelism::Rayon(num_threads)
-        // } else {
-        //     Parallelism::None
-        // };
-        // for step in 0..b {
-        //     let lhs_p = &lhs[step * a_skip..];
-        //     let rhs_p = &rhs[step * b_skip..];
-        //     let dst_p = &mut dst[step * c_skip..];
-        //     unsafe {
-        //         gemm(
-        //             /* m: usize = */ m,
-        //             /* n: usize = */ n,
-        //             /* k: usize = */ k,
-        //             /* dst: *mut T = */ dst_p.as_mut_ptr(),
-        //             /* dst_cs: isize = */ dst_cs as isize,
-        //             /* dst_rs: isize = */ dst_rs as isize,
-        //             /* read_dst: bool = */ false,
-        //             /* lhs: *const T = */ lhs_p.as_ptr(),
-        //             /* lhs_cs: isize = */ lhs_cs as isize,
-        //             /* lhs_rs: isize = */ lhs_rs as isize,
-        //             /* rhs: *const T = */ rhs_p.as_ptr(),
-        //             /* rhs_cs: isize = */ rhs_cs as isize,
-        //             /* rhs_rs: isize = */ rhs_rs as isize,
-        //             /* alpha: T = */ T::zero(),
-        //             /* beta: T = */ T::one(),
-        //             /* conj_dst: bool = */ false,
-        //             /* conj_lhs: bool = */ false,
-        //             /* conj_rhs: bool = */ false,
-        //             parallelism,
-        //         )
-        //     }
-        // }
-        Ok(())
-    }
-}
-
 impl Map2 for MatMul {
     const OP: &'static str = "matmul";
 
@@ -1029,35 +976,253 @@ impl Map2 for MatMul {
         dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
-        let l_dim = lhs_l.shape();
-        let r_dim: &[usize] = rhs_l.shape();
-        let dim = l_dim.len();
-        if dim < 2 || r_dim.len() != dim {
-            return Err(GError::ShapeMismatchBinaryOp {
-                lhs: lhs_l.shape.clone(),
-                rhs: rhs_l.shape.clone(),
-                op: "matmul",
-            });
-        }
-        let m = l_dim[dim - 2];
-        let k = l_dim[dim - 1];
-        let k2 = r_dim[dim - 2];
-        let n = r_dim[dim - 1];
-        // let mut c_dim = l_dim[..dim - 2].to_vec();
-        // c_dim.extend(&[m, n]);
-        // let c_n_dims = c_dim.len();
-        // let c_shape = Shape::from_vec(c_dim);
-        let batching: usize = l_dim[..dim - 2].iter().product();
-        let batching_b: usize = r_dim[..dim - 2].iter().product();
-        if k != k2 || batching != batching_b {
-            return Err(GError::ShapeMismatchBinaryOp {
-                lhs: lhs_l.shape.clone(),
-                rhs: rhs_l.shape.clone(),
-                op: "matmul",
-            });
-        }
-        self.compute_mul_mat_use_gemm(lhs, lhs_l, &rhs, rhs_l, dst, (batching, m, n, k))?;
+        // let l_dim = lhs_l.shape();
+        // let r_dim: &[usize] = rhs_l.shape();
+        // let dim = l_dim.len();
+        // if dim < 2 || r_dim.len() != dim {
+        //     return Err(GError::ShapeMismatchBinaryOp {
+        //         lhs: lhs_l.shape.clone(),
+        //         rhs: rhs_l.shape.clone(),
+        //         op: "matmul",
+        //     });
+        // }
+        // let m = l_dim[dim - 2];
+        // let k = l_dim[dim - 1];
+        // let k2 = r_dim[dim - 2];
+        // let n = r_dim[dim - 1];
+        // // let mut c_dim = l_dim[..dim - 2].to_vec();
+        // // c_dim.extend(&[m, n]);
+        // // let c_n_dims = c_dim.len();
+        // // let c_shape = Shape::from_vec(c_dim);
+        // let batching: usize = l_dim[..dim - 2].iter().product();
+        // let batching_b: usize = r_dim[..dim - 2].iter().product();
+        // if k != k2 || batching != batching_b {
+        //     return Err(GError::ShapeMismatchBinaryOp {
+        //         lhs: lhs_l.shape.clone(),
+        //         rhs: rhs_l.shape.clone(),
+        //         op: "matmul",
+        //     });
+        // }
+        // self.compute_mul_mat_use_gemm(lhs, lhs_l, &rhs, rhs_l, dst, (batching, m, n, k))?;
         Ok(())
+    }
+
+    fn f_quant_f32<T: QuantType>(
+        &self,
+        lhs: &[T],
+        lhs_l: &Dim,
+        rhs: &[f32],
+        rhs_l: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        let time1 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let block_size = T::VecDotType::BLCK_SIZE;
+        println!("block_size:{}", block_size);
+        let mut quant_list = vec![T::VecDotType::zero(); rhs.len() / block_size];
+        // T::VecDotType::from_f32(rhs, &mut quant_list)?;
+
+        // for (int i13 = 0; i13 < ne13; ++i13)
+        // {
+        //     for (int i12 = 0; i12 < ne12; ++i12)
+        //     {
+        //         for (int i11 = 0; i11 < ne11; ++i11)
+        //         {
+        //             // for (int i10 = 0; i10 < ne10; ++i10) {
+        //             //     wdata[id++] = GGML_FP32_TO_FP16(*(float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11 + i10*nb10));
+        //             // }
+        //             quantize_row_q4_0((float *)((char *)src1->data + i13 * nb13 + i12 * nb12 + i11 * nb11), (void *)wdata, ne10);
+        //             wdata += (ne10 * GGML_TYPE_SIZE[GGML_TYPE_Q4_0]) / GGML_BLCK_SIZE[GGML_TYPE_Q4_0];
+        //         }
+        //     }
+        // }
+        let (ne00, ne01, ne02, ne03) = lhs_l.dim4();
+        let (ne10, ne11, ne12, ne13) = rhs_l.dim4();
+
+        let (ne0, ne1, ne2, ne3) = dst_d.dim4();
+
+        let (nb00, nb01, nb02, nb03) = lhs_l.stride_4d();
+        let (nb10, nb11, nb12, nb13) = rhs_l.stride_4d();
+        let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+        let mut idx = 0;
+        let row_size = ne10 / block_size;
+        for i13 in 0..ne13 {
+            for i12 in 0..ne12 {
+                for i11 in 0..ne11 {
+                    T::VecDotType::from_f32(
+                        &rhs[i13 * nb13 + i12 * nb12 + i11 * nb11
+                            ..i13 * nb13 + i12 * nb12 + i11 * nb11 + ne10],
+                        &mut quant_list[idx..idx + row_size],
+                    )?;
+                    idx += row_size;
+                }
+            }
+        }
+
+        println!(
+            "ne00:{}, ne01:{}, ne02:{}, ne03:{}\n",
+            ne00, ne01, ne02, ne03,
+        );
+        println!(
+            "ne10:{}, ne11:{}, ne12:{}, ne13:{}\n",
+            ne10, ne11, ne12, ne13,
+        );
+        println!("ne0:{}, ne1:{}, ne2:{}, ne3:{}\n", ne0, ne1, ne2, ne3);
+        println!(
+            "nb00:{}, nb01:{}, nb02:{}, nb03:{}\n",
+            nb00, nb01, nb02, nb03,
+        );
+        println!(
+            "nb10:{}, nb11:{}, nb12:{}, nb13:{}\n",
+            nb10, nb11, nb12, nb13,
+        );
+        println!("nb0:{}, nb1:{}, nb2:{}, nb3:{}\n", nb0, nb1, nb2, nb3);
+
+        assert!(ne0 == ne01);
+        assert!(ne1 == ne11);
+        assert!(ne2 == ne12);
+        assert!(ne3 == ne13);
+
+        // we don't support permuted src0 or src1
+        assert!(nb00 == 1);
+        assert!(nb10 == 1);
+
+        // dst cannot be transposed or permuted
+        assert!(nb0 == 1);
+        assert!(nb0 <= nb1);
+        assert!(nb1 <= nb2);
+        assert!(nb2 <= nb3);
+
+        let ith = 0;
+        let nth = 1;
+
+        let row_size = ne10 / block_size;
+
+        let nr0 = ne01; // src0 rows
+        let nr1 = ne11 * ne12 * ne13; // src1 rows
+
+        //printf("nr0 = %lld, nr1 = %lld\n", nr0, nr1);
+
+        // distribute the thread work across the inner or outer loop based on which one is larger
+
+        let nth0 = 1; //nr0 > nr1 ? nth : 1; // parallelize by src0 rows
+        let nth1 = 1; //nr0 > nr1 ? 1 : nth; // parallelize by src1 rows
+
+        let ith0 = 0; //ith % nth0;
+        let ith1 = 0; //ith / nth0;
+
+        let dr0 = (nr0 + nth0 - 1) / nth0;
+        let dr1 = (nr1 + nth1 - 1) / nth1;
+
+        let ir010 = dr0 * ith0;
+        let ir011 = std::cmp::min(ir010 + dr0, nr0);
+
+        let ir110 = dr1 * ith1;
+        let ir111 = std::cmp::min(ir110 + dr1, nr1);
+
+        //printf("ir010 = %6lld, ir011 = %6lld, ir110 = %6lld, ir111 = %6lld\n", ir010, ir011, ir110, ir111);
+
+        // threads with no work simply yield (not sure if it helps)
+        // if (ir010 >= ir011 || ir110 >= ir111) {
+        //     return Ok(());
+        // }
+
+        assert!(ne12 % ne02 == 0);
+        assert!(ne13 % ne03 == 0);
+
+        // block-tiling attempt
+        let blck_0 = 16;
+        let blck_1 = 16;
+
+        // attempt to reduce false-sharing (does not seem to make a difference)
+        //  float tmp[16];
+        let r2 = ne12 / ne02;
+        let r3 = ne13 / ne03;
+
+        for iir1 in (ir110..ir111).step_by(blck_1 as usize) {
+            for iir0 in (ir010..ir011).step_by(blck_0 as usize) {
+                let ir1_range = iir1..(iir1 + blck_1).min(ir111);
+                for ir1 in ir1_range {
+                    let i13 = ir1 / (ne12 * ne11);
+                    let i12 = (ir1 - i13 * ne12 * ne11) / ne11;
+                    let i11 = ir1 - i13 * ne12 * ne11 - i12 * ne11;
+
+                    // Broadcast src0 into src1
+                    let i03 = i13 / r3;
+                    let i02 = i12 / r2;
+
+                    let i1 = i11;
+                    let i2 = i12;
+                    let i3 = i13;
+
+                    let src0_row = &lhs[(0 + i02 * nb02 + i03 * nb03)..];
+                    // Calculate the offset for src1
+                    let src1_col = &quant_list[(i11 + i12 * ne11 + i13 * ne12 * ne11) * row_size..];
+
+                    let dst_col = &mut dst[(i1 * nb1 + i2 * nb2 + i3 * nb3)..];
+                    assert!(ne00 % 32 == 0);
+                    for ir0 in (iir0..(iir0 + blck_0).min(ir011)).map(|x| x as usize) {
+                        dst_col[ir0] = T::vec_dot(
+                            &src0_row[ir0 * nb01..(ir0 * nb01 + ne00 / block_size)],
+                            &src1_col[..ne00 / block_size],
+                        );
+                    }
+                }
+            }
+        }
+
+        // let ith = 0;
+        // let nth = 1;
+
+        // let nr = ne01 * ne02 * ne03;
+
+        // // rows per thread
+        // let dr = (nr + nth - 1) / nth;
+
+        // // row range for this thread
+        // let ir0 = dr * ith;
+        // let ir1 = std::cmp::min(ir0 + dr, nr);
+
+        // //   ggml_fp16_t * wdata = params->wdata;
+        // if nb01 >= nb00 {
+        //     for ir in ir0..ir1 {
+        //         // src0 indices
+        //         let i03 = ir / (ne02 * ne01);
+        //         let i02 = (ir - i03 * ne02 * ne01) / ne01;
+        //         let i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
+
+        //         let i13 = i03;
+        //         let i12 = i02;
+
+        //         let i0 = i01;
+        //         let i2 = i02;
+        //         let i3 = i03;
+
+        //         let src0_row = &lhs[i01 * nb01 + i02 * nb02 + i03 * nb03..];
+        //         let src1_col =
+        //             &quant_list[(0 + i12 * ne11 + i13 * ne12 * ne11) * ne00 / block_size..];
+
+        //         let dst_col = &mut dst[i0 * nb0 + 0 * nb1 + i2 * nb2 + i3 * nb3..];
+        //         assert!(ne00 % 32 == 0);
+        //         for ic in 0..ne11 {
+        //             dst_col[ic * ne0] =
+        //                 T::vec_dot(src0_row, &src1_col[ic * ne00 / block_size..], ne00)
+        //         }
+        //     }
+        // } else {
+        //     todo!()
+        // }
+
+        let time2 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        println!("quant {} time:{} ms", Self::OP, time2 - time1);
+        return Ok(());
     }
 
     fn f_f16_f32(
@@ -1135,58 +1300,6 @@ impl Map2 for MatMul {
             .as_millis();
         println!("{} time:{} ms", Self::OP, time2 - time1);
         return Ok(());
-
-        // if self.can_use_gemm(lhs_l, rhs_l) {
-        //     // let rhs_l = rhs_l.clone().transpose(0, 1)?;
-        //     let l_dim = lhs_l.shape();
-        //     let r_dim: &[usize] = rhs_l.shape();
-        //     let dim = l_dim.len();
-        //     if dim < 2 || r_dim.len() != dim {
-        //         return Err(GError::ShapeMismatchBinaryOp {
-        //             lhs: lhs_l.shape.clone(),
-        //             rhs: rhs_l.shape.clone(),
-        //             op: "matmul",
-        //         });
-        //     }
-        //     let m = l_dim[dim - 2];
-        //     let k = l_dim[dim - 1];
-        //     let k2 = r_dim[dim - 2];
-        //     let n = r_dim[dim - 1];
-        //     // let mut c_dim = l_dim[..dim - 2].to_vec();
-        //     // c_dim.extend(&[m, n]);
-        //     // let c_n_dims = c_dim.len();
-        //     // let c_shape = Shape::from_vec(c_dim);
-        //     let batching: usize = l_dim[..dim - 2].iter().product();
-        //     let batching_b: usize = r_dim[..dim - 2].iter().product();
-        //     if k != k2 || batching != batching_b {
-        //         return Err(GError::ShapeMismatchBinaryOp {
-        //             lhs: lhs_l.shape.clone(),
-        //             rhs: rhs_l.shape.clone(),
-        //             op: "matmul",
-        //         });
-        //     }
-        //     let mut dst_f16 = vec![f16::zero(); batching * m * n];
-        //     self.compute_mul_mat_use_gemm(
-        //         lhs,
-        //         lhs_l,
-        //         &rhs_f16,
-        //         &rhs_l,
-        //         &mut dst_f16,
-        //         (batching, m, n, k),
-        //     )?;
-        //     dst.par_iter_mut()
-        //         .zip(dst_f16.par_iter())
-        //         .for_each(|(d, s)| *d = s.to_f32());
-        // } else {
-        //     println!("not use gemm");
-        // }
-
-        // let time2 = SystemTime::now()
-        //     .duration_since(UNIX_EPOCH)
-        //     .unwrap()
-        //     .as_millis();
-        // println!("{} time:{} ms", Self::OP, time2 - time1);
-        // Ok(())
     }
 }
 
@@ -1540,6 +1653,18 @@ impl Map2 for Scale {
         Ok(())
     }
 
+    fn f_quant_f32<T: QuantType>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
     fn f_f32(
         &self,
         inp0: &[f32],
@@ -1585,7 +1710,7 @@ impl Map2 for GetRows {
     const OP: &'static str = "get_rows";
     fn f_Q40_I32_f32(
         &self,
-        inp0: &[BlockV1_Q4_0],
+        inp0: &[BlockQ4_0],
         inp0_d: &Dim,
         inp1: &[i32],
         inp1_d: &Dim,
@@ -1602,12 +1727,24 @@ impl Map2 for GetRows {
         assert!(inp0_d.stride_1d() == 1);
         for i in 0..nr {
             let r = inp1[i] as usize;
-            BlockV1_Q4_0::to_f32(
+            BlockQ4_0::to_f32(
                 &inp0[r * nbv1..r * nbv1 + nc],
                 &mut dst[i * nbd1..i * nbd1 + nc],
             )
         }
         Ok(())
+    }
+
+    fn f_quant_f32<T: QuantType>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
     }
 }
 
@@ -1820,6 +1957,16 @@ trait Map2 {
         todo!()
     }
 
+    fn f_quant_f32<T: QuantType>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()>;
+
     fn f_f32(
         &self,
         inp: &[f32],
@@ -1834,7 +1981,7 @@ trait Map2 {
 
     fn f_Q40_I32_f32(
         &self,
-        inp0: &[BlockV1_Q4_0],
+        inp0: &[BlockQ4_0],
         inp0_d: &Dim,
         inp1: &[i32],
         inp1_d: &Dim,
@@ -1843,6 +1990,18 @@ trait Map2 {
     ) -> GResult<()> {
         todo!()
     }
+
+    // fn f_Q4_0_f32(
+    //     &self,
+    //     inp0: &[BlockQ4_0],
+    //     inp0_d: &Dim,
+    //     inp1: &[f32],
+    //     inp1_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     fn f_f16_f32(
         &self,
@@ -1875,8 +2034,11 @@ trait Map2 {
             (CpuDevice::F16(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
                 self.f_f16_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
-            (CpuDevice::Q4V1_0(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
+            (CpuDevice::Q4_0(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
                 self.f_Q40_I32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+            }
+            (CpuDevice::Q4_0(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+                self.f_quant_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             _ => {
                 todo!()
