@@ -96,6 +96,25 @@ impl Dim {
         dims1(&self.stride)
     }
 
+    pub fn dim_3(&self) -> usize {
+        //  assert!(self.n_dims() == 4);
+        self.shape_layout()[3]
+    }
+
+    pub fn dim_2(&self) -> usize {
+        // assert!(self.n_dims() >= 3);
+        self.shape_layout()[2]
+    }
+
+    pub fn dim_1(&self) -> usize {
+        // assert!(self.n_dims() >= 2);
+        self.shape_layout()[1]
+    }
+
+    pub fn dim_0(&self) -> usize {
+        self.shape.dims1()
+    }
+
     pub fn dim4(&self) -> (usize, usize, usize, usize) {
         self.shape.dims4()
     }
@@ -119,6 +138,11 @@ impl Dim {
     pub fn nrows(&self) -> usize {
         let (_, d1, d2, d3) = self.dim4();
         d1 * d2 * d3
+    }
+
+    pub fn is_vector(&self) -> bool {
+        let (_, d1, d2, d3) = self.dim4();
+        return d1 == 1 && d2 == 1 && d3 == 1;
     }
 
     pub(crate) fn elem_count(&self) -> usize {

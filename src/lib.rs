@@ -32,7 +32,7 @@ use std::mem::forget;
 mod tensor;
 use crate::shape::Layout;
 use half::f16;
-use num_traits::ToPrimitive;
+use num_traits::{FromPrimitive, ToPrimitive};
 pub type F16 = half::f16;
 // const STEP: usize = 128;
 // const EPR: usize = 32;
@@ -103,13 +103,13 @@ pub const GS_TYPE_SIZE: [usize; GGmlType::TypeCount as usize] = [
     0,                                //Q4_3
     0,                                //Q5_0
     0,                                //Q5_1
-    std::mem::size_of::<BlockQ6K>(),  //Q6K
     std::mem::size_of::<BlockQ8_0>(), //Q8_0
     0,                                //Q8_1
     0,                                //Q2K
     0,                                //Q3K
     0,                                //Q4K
     0,                                //Q5K
+    std::mem::size_of::<BlockQ6K>(),  //Q6K
     0,                                //Q8K
     0,                                //I8
     0,                                //I16
@@ -125,13 +125,13 @@ pub const GS_BLCK_SIZE: [usize; GGmlType::TypeCount as usize] = [
     1,     //Q4_3
     1,     //Q5_0
     1,     //Q5_1
-    QK_K,  //Q6K
     QK8_0, //Q8_0
     1,     //Q8_1
     1,     //Q2K
     1,     //Q3K
     1,     //Q4K
     1,     //Q5K
+    QK_K,  //Q6K
     1,     //Q8K
     1,     //I8
     1,     //I16
@@ -171,40 +171,40 @@ macro_rules! impl_fromf64 {
     };
 }
 
-#[macro_export]
-macro_rules! impl_no_unary_op {
-    ($($e:ident),*) => {
-        $(impl UnaryOp for $e {
-                fn _exp(&self) -> Self {
-                   todo!()
-                }
-                fn _ln(&self) -> Self {
-                    todo!()
-                }
-                fn _sin(&self) -> Self {
-                    todo!()
-                }
-                fn _cos(&self) -> Self {
-                    todo!()
-                }
-                fn _tanh(&self) -> Self {
-                    todo!()
-                }
-                fn _neg(&self) -> Self {
-                    todo!()
-                }
-                fn _recip(&self) -> Self {
-                    todo!()
-                }
-                fn _sqr(&self) -> Self {
-                    todo!()
-                }
-                fn _sqrt(&self) -> Self {
-                    todo!()
-                }
-        })*
-    };
-}
+// #[macro_export]
+// macro_rules! impl_no_unary_op {
+//     ($($e:ident),*) => {
+//         $(impl UnaryOp for $e {
+//                 fn _exp(&self) -> Self {
+//                    todo!()
+//                 }
+//                 fn _ln(&self) -> Self {
+//                     todo!()
+//                 }
+//                 fn _sin(&self) -> Self {
+//                     todo!()
+//                 }
+//                 fn _cos(&self) -> Self {
+//                     todo!()
+//                 }
+//                 fn _tanh(&self) -> Self {
+//                     todo!()
+//                 }
+//                 fn _neg(&self) -> Self {
+//                     todo!()
+//                 }
+//                 fn _recip(&self) -> Self {
+//                     todo!()
+//                 }
+//                 fn _sqr(&self) -> Self {
+//                     todo!()
+//                 }
+//                 fn _sqrt(&self) -> Self {
+//                     todo!()
+//                 }
+//         })*
+//     };
+// }
 
 impl ToUsize for f16 {
     fn as_usize(&self) -> usize {
@@ -227,26 +227,126 @@ impl FromF64 for f16 {
 impl_tousize!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 impl_fromf32!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 impl_fromf64!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
-impl_no_unary_op!(u8, u16, u32, u64, i8, i16, i32, i64);
+//impl_no_unary_op!(u8, u16, u32, u64, i8, i16, i32, i64);
 
 impl TensorType for f16 {
     const DTYPE: GGmlType = GGmlType::F16;
+
+    fn to_f32(&self) -> f32 {
+        ToPrimitive::to_f32(self).unwrap_or(0.0)
+    }
+
+    fn to_f16(&self) -> f16 {
+        *self
+    }
+
+    fn to_i32(&self) -> i32 {
+        ToPrimitive::to_i32(self).unwrap_or(0)
+    }
+
+    fn from_f32(x: f32) -> Self {
+        Self::from_f32(x)
+    }
+
+    fn from_x<X: TensorType>(x: X) -> Self {
+        x.to_f16()
+    }
 }
 
 impl TensorType for f32 {
     const DTYPE: GGmlType = GGmlType::F32;
-}
 
-// impl TensorType for f64 {
-//     const DTYPE: GGmlType = GGmlType::F64;
-// }
+    fn to_f32(&self) -> f32 {
+        *self
+    }
+
+    fn to_f16(&self) -> f16 {
+        f16::from_f32(*self)
+    }
+
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+
+    fn from_f32(x: f32) -> Self {
+        x
+    }
+
+    fn from_x<X: TensorType>(x: X) -> Self {
+        x.to_f32()
+    }
+}
 
 impl TensorType for i32 {
     const DTYPE: GGmlType = GGmlType::I32;
+
+    fn to_f32(&self) -> f32 {
+        *self as f32
+    }
+
+    fn to_f16(&self) -> f16 {
+        f16::from_i32(*self).unwrap_or(f16::zero())
+    }
+
+    fn to_i32(&self) -> i32 {
+        *self
+    }
+
+    fn from_f32(x: f32) -> Self {
+        x as i32
+    }
+
+    fn from_x<X: TensorType>(x: X) -> Self {
+        x.to_i32()
+    }
 }
 
 impl TensorType for BlockQ4_0 {
     const DTYPE: GGmlType = GGmlType::Q4_0;
+
+    fn to_f32(&self) -> f32 {
+        todo!()
+    }
+
+    fn from_f32(x: f32) -> Self {
+        todo!()
+    }
+
+    fn from_x<X: TensorType>(x: X) -> Self {
+        todo!()
+    }
+
+    fn to_f16(&self) -> f16 {
+        todo!()
+    }
+
+    fn to_i32(&self) -> i32 {
+        todo!()
+    }
+}
+
+impl TensorType for BlockQ6K {
+    const DTYPE: GGmlType = GGmlType::Q6K;
+
+    fn to_f32(&self) -> f32 {
+        todo!()
+    }
+
+    fn from_f32(x: f32) -> Self {
+        todo!()
+    }
+
+    fn from_x<X: TensorType>(x: X) -> Self {
+        todo!()
+    }
+
+    fn to_f16(&self) -> f16 {
+        todo!()
+    }
+
+    fn to_i32(&self) -> i32 {
+        todo!()
+    }
 }
 
 pub trait ToUsize {
@@ -279,67 +379,17 @@ pub trait TensorType:
     fn zeros() -> Self {
         unsafe { std::mem::MaybeUninit::zeroed().assume_init() }
     }
-    // const DTYPE: GGmlType;
-    // #[inline(always)]
-    // unsafe fn vec_dot(lhs: *const Self, rhs: *const Self, res: *mut Self, len: usize) {
-    //     *res = Self::zero();
-    //     for i in 0..len {
-    //         *res += *lhs.add(i) * *rhs.add(i)
-    //     }
-    // }
 
-    // #[cfg(not(target_feature = "avx"))]
-    // #[inline(always)]
-    // unsafe fn vec_dot_f16(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
-    //     *res = f32::zero();
-    //     for i in 0..len {
-    //         *res += ((*lhs.add(i)).to_f32() * (*rhs.add(i)).to_f32());
-    //     }
-    // }
+    fn to_f32(&self)->f32;
 
-    // #[cfg(target_feature = "avx")]
-    // #[inline(always)]
-    // unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: usize) {
-    //     let mut sumf = 0.0f32;
-    //     let np = k & !(STEP - 1);
+    fn to_f16(&self)->f16;
 
-    //     let mut sum = [_mm256_setzero_ps(); ARR];
-    //     let mut ax = [_mm256_setzero_ps(); ARR];
-    //     let mut ay = [_mm256_setzero_ps(); ARR];
+    fn to_i32(&self)->i32;
 
-    //     for i in (0..np).step_by(STEP) {
-    //         for j in 0..ARR {
-    //             ax[j] = _mm256_cvtph_ps(_mm_loadu_si128(a_row.add(i + j * EPR) as *const __m128i));
-    //             ay[j] = _mm256_cvtph_ps(_mm_loadu_si128(b_row.add(i + j * EPR) as *const __m128i));
+    fn from_f32(x:f32)-> Self ;
 
-    //             sum[j] = _mm256_add_ps(_mm256_mul_ps(ax[j], ay[j]), sum[j]);
-    //         }
-    //     }
+    fn from_x<X:TensorType>(x:X)-> Self;
 
-    //     let mut offset = ARR >> 1;
-    //     for i in 0..offset {
-    //         sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
-    //     }
-    //     offset >>= 1;
-    //     for i in 0..offset {
-    //         sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
-    //     }
-    //     offset >>= 1;
-    //     for i in 0..offset {
-    //         sum[i] = _mm256_add_ps(sum[i], sum[offset + i]);
-    //     }
-    //     let t0 = _mm_add_ps(
-    //         _mm256_castps256_ps128(sum[0]),
-    //         _mm256_extractf128_ps(sum[0], 1),
-    //     );
-    //     let t1 = _mm_hadd_ps(t0, t0);
-    //     sumf = _mm_cvtss_f32(_mm_hadd_ps(t1, t1));
-    //     // leftovers
-    //     for i in np..k {
-    //         sumf += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
-    //     }
-    //     *c = sumf;
-    // }
 }
 
 pub trait Zero: Clone {
@@ -949,6 +999,7 @@ impl<'a> TensorIter<'a> {
 #[derive(Clone)]
 pub enum CpuDevice {
     Q4_0(RawData<BlockQ4_0>),
+    Q6K(RawData<BlockQ6K>),
     F16(RawData<f16>),
     F32(RawData<f32>),
     //  F64(RawData<f64>),
@@ -961,6 +1012,7 @@ impl CpuDevice {
     pub(crate) fn offset(&self, i: usize) -> CpuDevice {
         return match self {
             CpuDevice::Q4_0(v) => CpuDevice::Q4_0(v.offset(i)),
+            CpuDevice::Q6K(v) => CpuDevice::Q6K(v.offset(i)),
             CpuDevice::F16(v) => CpuDevice::F16(v.offset(i)),
             CpuDevice::F32(v) => CpuDevice::F32(v.offset(i)),
             //  CpuDevice::F64(v) => CpuDevice::F64(v.offset(i)),
@@ -981,6 +1033,7 @@ impl CpuDevice {
     pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         return match self {
             CpuDevice::Q4_0(v) => v.as_bytes_mut(),
+            CpuDevice::Q6K(v) => v.as_bytes_mut(),
             CpuDevice::F16(v) => v.as_bytes_mut(),
             CpuDevice::F32(v) => v.as_bytes_mut(),
             // CpuDevice::F64(v) => v.as_bytes_mut(),
@@ -991,9 +1044,9 @@ impl CpuDevice {
     pub(crate) fn as_bytes(&self) -> &[u8] {
         return match self {
             CpuDevice::Q4_0(v) => v.as_bytes(),
+            CpuDevice::Q6K(v) => v.as_bytes(),
             CpuDevice::F16(v) => v.as_bytes(),
             CpuDevice::F32(v) => v.as_bytes(),
-            // CpuDevice::F64(v) => v.as_bytes(),
             CpuDevice::I32(v) => v.as_bytes(),
         };
     }
@@ -1001,6 +1054,7 @@ impl CpuDevice {
     pub(crate) fn as_ref(&self) -> CpuDevice {
         return match self {
             CpuDevice::Q4_0(v) => CpuDevice::Q4_0(v.as_ref()),
+            CpuDevice::Q6K(v) => CpuDevice::Q6K(v.as_ref()),
             CpuDevice::F16(v) => CpuDevice::F16(v.as_ref()),
             CpuDevice::F32(v) => CpuDevice::F32(v.as_ref()),
             //  CpuDevice::F64(v) => CpuDevice::F64(v.as_ref()),
@@ -1011,6 +1065,7 @@ impl CpuDevice {
     pub(crate) fn len(&self) -> usize {
         return match self {
             CpuDevice::Q4_0(v) => v.len(),
+            CpuDevice::Q6K(v) => v.len(),
             CpuDevice::F16(v) => v.len(),
             CpuDevice::F32(v) => v.len(),
             //CpuDevice::F64(v) => v.len(),
@@ -1406,6 +1461,12 @@ impl Tensor {
                 s,
                 dtype,
             ),
+            GGmlType::Q6K => Tensor::from_device(
+                Device::Cpu(CpuDevice::Q6K(RawData::from_bytes(v))),
+                n_dims,
+                s,
+                dtype,
+            ),
             GGmlType::F16 => Tensor::from_device(
                 Device::Cpu(CpuDevice::F16(RawData::from_bytes(v))),
                 n_dims,
@@ -1438,8 +1499,11 @@ impl Tensor {
     }
 
     pub fn nbytes(&self) -> usize {
-        //self.device().nbytes()
         self.elem_count() * GS_TYPE_SIZE[self.dtype as usize] / GS_BLCK_SIZE[self.dtype as usize]
+    }
+
+    pub fn elem_size(&self) -> usize {
+        GS_TYPE_SIZE[self.dtype as usize]
     }
 
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
@@ -1504,6 +1568,22 @@ impl Tensor {
         &self.dim.stride()
     }
 
+    pub fn dim_3(&self) -> usize {
+        self.dim.dim_3()
+    }
+
+    pub fn dim_2(&self) -> usize {
+        self.dim.dim_2()
+    }
+
+    pub fn dim_1(&self) -> usize {
+        self.dim.dim_1()
+    }
+
+    pub fn dim_0(&self) -> usize {
+        self.dim.dim_0()
+    }
+
     pub fn dim1(&self) -> usize {
         self.dim.dim1()
     }
@@ -1518,6 +1598,10 @@ impl Tensor {
 
     pub fn dim4(&self) -> (usize, usize, usize, usize) {
         self.dim.dim4()
+    }
+
+    pub fn stride4(&self) -> (usize, usize, usize, usize) {
+        self.dim.stride_4d()
     }
 
     pub fn n_dims(&self) -> usize {
@@ -1560,31 +1644,13 @@ impl Tensor {
         self.dim.is_contiguous()
     }
 
+    pub fn is_vector(&self) -> bool {
+        self.dim().is_vector()
+    }
+
     pub fn ggml_is_contiguous(&self) -> bool {
         self.dim.ggml_is_contiguous()
     }
-
-    // pub fn sqrt(&self) -> Self {
-    //     match &self.data {
-    //         Device::Cpu(d) => {
-    //             Tensor::from_device(
-    //                 Device::Cpu(d.sqrt()),
-    //                 self.dim().shape().clone(),
-    //                 self.dtype(),
-    //             )
-    //             // let v = diter().map(|x| x._sqrt()).collect();
-    //             // Tensor::from_vec(v, self.dim().shape().clone())
-    //         }
-    //         Device::Gpu() => {
-    //             todo!()
-    //         }
-    //     }
-    // }
-
-    // pub fn into_sqrt(mut self) -> Self {
-    //     self.as_slice_mut().iter_mut().for_each(|v| *v = v._sqrt());
-    //     self
-    // }
 
     pub fn chunk(&self, chunks: usize, dim: usize) -> GResult<Vec<Self>> {
         let size = self.dim().shape()[dim];

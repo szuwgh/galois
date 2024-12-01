@@ -1,4 +1,5 @@
 use core::time;
+use std::cmp::min;
 use std::collections::VecDeque;
 use std::ops::Neg;
 
@@ -6,6 +7,7 @@ use crate::error::GResult;
 use crate::ggml_quants::QuantType;
 use crate::Device;
 use crate::GError;
+use std::f32::INFINITY;
 //use super::broadcast::{broadcasting_binary_op, general_broadcasting};
 use crate::ggml_quants::BlockQ4_0;
 use crate::CpuDevice;
@@ -65,6 +67,11 @@ fn compute_gelu(v: f32) -> f32 {
 }
 
 #[inline]
+fn compute_silu(x: f32) -> f32 {
+    x / (1.0 + (-x).exp())
+}
+
+#[inline]
 fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
     let n32 = n & !(STEP - 1);
     let scale = std::simd::f32x32::splat(v);
@@ -78,39 +85,31 @@ fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
     }
 }
 
-// #[inline]
-// pub unsafe fn vld1q_f16(ptr: *const f16) -> float16x8_t {
-//     core::arch::aarch64::vld1q_u16(ptr as *const u16) as float16x8_t
-// }
+#[inline]
+fn vec_silu_f32(n: usize, y: &mut [f32], x: &[f32]) {
+    for i in 0..n {
+        y[i] = GLOBAL_CPU_DEVICE_CACHE
+            .get_silu_cache(f16::from_f32(x[i]).to_bits() as usize)
+            .to_f32()
+    }
+}
 
-// #[inline]
-// pub unsafe fn vst1q_f16(ptr: *mut f16, a: float16x8_t) {
-//     core::arch::aarch64::vst1q_u16(ptr as *mut u16, a as uint16x8_t);
-// }
-
-// unsafe {
-//     let mut sumv0 = vdupq_n_f16(f16::ZERO.to_bits());
-//     let mut sumv1 = vdupq_n_f16(f16::ZERO.to_bits());
-//     let k_rounded = k - k % 16;
-//     for ki in (0..k_rounded).step_by(16) {
-//         let av0 = vld1q_f16(a.as_ptr().add(a_offset + ki));
-//         let bv0 = vld1q_f16(b.as_ptr().add(b_offset + ki));
-//         let av1 = vld1q_f16(a.as_ptr().add(a_offset + ki + 8));
-//         let bv1 = vld1q_f16(b.as_ptr().add(b_offset + ki + 8));
-//         sumv0 = vfmaq_f16(sumv0, av0, bv0);
-//         sumv1 = vfmaq_f16(sumv1, av1, bv1);
-//     }
-
-//     let mut sum = myaarch64::vaddvq_f16(sumv0) + myaarch64::vaddvq_f16(sumv1);
-//     for ki in k_rounded..k {
-//         sum += (a.get_unchecked(a_offset + ki) * b.get_unchecked(b_offset + ki)).to_f32();
-//     }
-//     sum
-// }
+pub enum UnaryOp {
+    Abs,
+    Sgn,
+    Neg,
+    Step,
+    Tanh,
+    Elu,
+    Relu,
+    Gelu,
+    GeluQuick,
+    Silu,
+}
 
 #[cfg(not(target_feature = "avx2"))]
 #[inline(always)]
-unsafe fn vec_dot_f16(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
+pub(crate) unsafe fn vec_dot_f16(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usize) {
     *res = 0.0f32;
     for i in 0..len {
         *res += ((*lhs.add(i)).to_f32() * (*rhs.add(i)).to_f32());
@@ -119,7 +118,7 @@ unsafe fn vec_dot_f16(lhs: *const f16, rhs: *const f16, res: *mut f32, len: usiz
 
 #[cfg(target_feature = "avx2")]
 #[inline(always)]
-unsafe fn vec_dot_f16(x: *const f16, y: *const f16, c: *mut f32, k: usize) {
+pub(crate) unsafe fn vec_dot_f16(x: *const f16, y: *const f16, c: *mut f32, k: usize) {
     let mut sumf = 0.0f32;
     let n32 = k & !(STEP - 1);
 
@@ -183,6 +182,7 @@ unsafe impl Sync for CpuDeviceCache {}
 struct CpuDeviceCache {
     gelu_cache: OnceCell<Vec<f16>>,
     exp_cache: OnceCell<Vec<f16>>,
+    silu_cache: OnceCell<Vec<f16>>,
 }
 
 impl CpuDeviceCache {
@@ -190,6 +190,7 @@ impl CpuDeviceCache {
         CpuDeviceCache {
             gelu_cache: OnceCell::from(Self::init_gelu_cache()),
             exp_cache: OnceCell::from(Self::init_exp_cache()),
+            silu_cache: OnceCell::from(Self::init_silu_cache()),
         }
     }
 
@@ -197,8 +198,21 @@ impl CpuDeviceCache {
         self.gelu_cache.get().unwrap()[i]
     }
 
+    fn get_silu_cache(&self, i: usize) -> f16 {
+        self.silu_cache.get().unwrap()[i]
+    }
+
     fn get_exp_cache(&self, i: usize) -> f16 {
         self.exp_cache.get().unwrap()[i]
+    }
+
+    fn init_silu_cache() -> Vec<f16> {
+        (0..1 << 16)
+            .map(|x| {
+                let v = f16::from_bits(x as u16).to_f32();
+                f16::from_f32(compute_silu(v))
+            })
+            .collect()
     }
 
     fn init_gelu_cache() -> Vec<f16> {
@@ -287,37 +301,99 @@ struct Add;
 
 impl Map2 for Add {
     const OP: &'static str = "add";
+
+    fn f_quant_num<T: QuantType, X>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_x_y_x<X, Y>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        k: &[Y],
+        k_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_quant_num2<T: QuantType, X, Y>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
     fn f_f32(
         &self,
+        inp0: &[f32],
+        inp0_d: &Dim,
         inp1: &[f32],
         inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
-        assert!(
-            is_same_shape(inp1_d.shape(), inp2_d.shape())
-                && is_same_shape(inp1_d.shape(), dst_d.shape())
-        );
+        assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
 
         let ith: usize = 0;
         let nth: usize = 1;
 
-        let n = inp1_d.nrows();
-        let nc = inp1_d.dim1();
+        let nr = inp0_d.nrows();
+        let nc = inp0_d.dim1();
 
-        let (nb00, nb01) = inp1_d.stride_2d();
+        let (ne00, ne01, ne02, ne03) = inp0_d.dim4();
+        let (ne10, ne11, ne12, ne13) = inp1_d.dim4();
 
-        let (nb10, nb11) = inp2_d.stride_2d();
+        // let (ne0, ne1, ne2, ne3) = dst_d.dim4();
 
-        let (nb0, nb1) = dst_d.stride_2d();
+        let (nb00, nb01, nb02, nb03) = inp0_d.stride_4d();
+        let (nb10, nb11, nb12, nb13) = inp1_d.stride_4d();
+        let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
 
         assert!(nb0 == 1);
         assert!(nb00 == 1);
 
+        // rows per thread
+        let dr = (nr + nth - 1) / nth;
+
+        // row range for this thread
+        let ir0 = dr * ith;
+        let ir1 = min(ir0 + dr, nr);
+
         if nb10 == 1 {
-            simd_vec_add_f32(inp1, inp2, dst);
+            for ir in ir0..ir1 {
+                let i03 = ir / (ne02 * ne01);
+                let i02 = (ir - i03 * ne02 * ne01) / ne01;
+                let i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
+
+                let i13 = i03 % ne13;
+                let i12 = i02 % ne12;
+                let i11 = i01 % ne11;
+
+                let dst_pos = i03 * nb3 + i02 * nb2 + i01 * nb1;
+                let src0_pos = i03 * nb03 + i02 * nb02 + i01 * nb01;
+                let src1_pos = i13 * nb13 + i12 * nb12 + i11 * nb11;
+
+                let dst_ptr = &mut dst[dst_pos..dst_pos + ne00];
+                let src0_ptr = &inp0[src0_pos..src0_pos + ne00];
+                let src1_ptr = &inp1[src1_pos..src1_pos + ne00];
+
+                simd_vec_add_f32(src0_ptr, src1_ptr, dst_ptr);
+            }
         } else {
             // for j in 0..n {
             //     let dst_ptr = &mut dst[j * nb1..];
@@ -326,13 +402,14 @@ impl Map2 for Add {
             //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
             //     }
             // }
+            println!("不连续");
 
             dst.par_chunks_mut(nb1)
                 .enumerate()
                 .for_each(|(j, dst_ptr)| {
-                    let src0_ptr = &inp1[j * nb01..];
+                    let src0_ptr = &inp0[j * nb01..];
                     for i in 0..nc {
-                        dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
+                        dst_ptr[i] = src0_ptr[i] + inp1[j * nb11 + i * nb10];
                     }
                 });
         }
@@ -357,6 +434,43 @@ struct Mul;
 
 impl Map2 for Mul {
     const OP: &'static str = "mul";
+
+    fn f_quant_num<T: QuantType, X>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_x_y_x<X, Y>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        k: &[Y],
+        k_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_quant_num2<T: QuantType, X, Y>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
     fn f_f32(
         &self,
         inp1: &[f32],
@@ -477,9 +591,19 @@ impl Map for Gelu {
         Ok(())
     }
 
-    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
-        Ok(())
+    fn f_x_y<X: TensorType, Y: TensorType>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
     }
+
+    // fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+    //     Ok(())
+    // }
 }
 
 struct Conv1D1S;
@@ -487,135 +611,171 @@ struct Conv1D1S;
 impl Map2 for Conv1D1S {
     const OP: &'static str = "conv1d1s";
 
-    fn f_f16_f32(
+    fn f_quant_num<T: QuantType, X>(
         &self,
-        kernel: &[f16],
-        k_d: &Dim,
-        inp: &[f32],
-        inp_d: &Dim,
-        dst: &mut [f32],
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [X],
         dst_d: &Dim,
     ) -> GResult<()> {
-        let time1 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        let (ne00, ne01, ne02) = k_d.dim3();
-
-        let (ne10, ne11) = inp_d.dim2();
-        let (_, nb01, nb02) = k_d.stride_3d();
-        let (_, nb11) = inp_d.stride_2d();
-
-        let nb1 = dst_d.stride()[1];
-
-        let ith = 0;
-        let nth: usize = 1;
-
-        let nk = ne00;
-        let nh: i32 = (nk / 2) as i32;
-
-        let ew0 = up32(ne01 as i32) as usize;
-
-        let mut ker_f16: Vec<f16> = vec![f16::from_f32(0.0); ne02 * ew0 * ne00];
-
-        for i02 in 0..ne02 {
-            for i01 in 0..ne01 {
-                let src_start = i02 * nb02 + i01 * nb01;
-                //  let src_end = src_start + ne00;
-                let src_slice = &kernel[src_start..];
-
-                let dst_start = i02 * ew0 * ne00;
-                // let dst_end = dst_start + ne00 * ew0;
-                let dst_slice = &mut ker_f16[dst_start..];
-                for i00 in 0..ne00 {
-                    dst_slice[i00 * ew0 + i01] = src_slice[i00];
-                }
-            }
-        }
-
-        let mut inp_f16: Vec<f16> =
-            vec![f16::from_f32(0.0); (ne10 + nh as usize) * ew0 * ne11 + ew0];
-        for i11 in 0..ne11 {
-            let src_chunk = &inp[i11 * nb11..];
-
-            for i10 in 0..ne10 {
-                let index = (i10 + nh as usize) * ew0 + i11;
-                inp_f16[index] = f16::from_f32(src_chunk[i10]);
-            }
-        }
-
-        // total rows in dst
-        let nr = ne02;
-
-        // rows per thread
-        let dr = nr; //(nr + nth - 1) / nth;
-
-        // row range for this thread
-        let ir0 = 0; //dr * ith;
-        let ir1 = std::cmp::min(ir0 + dr, nr);
-
-        // unsafe {
-        //     for i1 in ir0..ir1 {
-        //         let dst_data = &mut dst[i1 * nb1..];
-
-        //         for i0 in 0..ne10 {
-        //             dst_data[i0] = 0.0;
-        //             for k in -nh..=nh {
-        //                 let mut v = 0.0f32;
-        //                 let wdata1_idx =
-        //                     ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
-        //                 let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-        //                 let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
-        //                 let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-        //                 unsafe { vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
-        //                 dst_data[i0] += v;
-        //             }
-        //         }
-        //     }
-        // }
-        unsafe {
-            dst.par_chunks_mut(nb1)
-                .enumerate()
-                .for_each(|(i1, dst_data)| {
-                    for i0 in 0..ne10 {
-                        dst_data[i0] = 0.0;
-                        for k in -nh..=nh {
-                            let mut v = 0.0f32;
-                            let wdata1_idx =
-                                ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
-                            let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-                            let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
-                            let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-                            vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0);
-                            dst_data[i0] += v;
-                        }
-                    }
-                });
-        }
-        let time2 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        println!("{} time:{} ms", Self::OP, time2 - time1);
-        // (0..nr).into_par_iter().for_each(|i1| {
-        //     let dst_data = &mut dst[i1 * nb1..];
-
-        //     for i0 in 0..ne10 {
-        //         dst_data[i0] = 0.0;
-        //         for k in -nh..=nh {
-        //             let mut v = 0.0f32;
-        //             let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
-        //             let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-        //             let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
-        //             let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-        //             unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
-        //             dst_data[i0] += v;
-        //         }
-        //     }
-        // });
-
-        Ok(())
+        todo!()
     }
+
+    fn f_x_y_x<X, Y>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        k: &[Y],
+        k_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_quant_num2<T: QuantType, X, Y>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    // fn f_f16_f32(
+    //     &self,
+    //     kernel: &[f16],
+    //     k_d: &Dim,
+    //     inp: &[f32],
+    //     inp_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     let time1 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+    //     let (ne00, ne01, ne02) = k_d.dim3();
+
+    //     let (ne10, ne11) = inp_d.dim2();
+    //     let (_, nb01, nb02) = k_d.stride_3d();
+    //     let (_, nb11) = inp_d.stride_2d();
+
+    //     let nb1 = dst_d.stride()[1];
+
+    //     let ith = 0;
+    //     let nth: usize = 1;
+
+    //     let nk = ne00;
+    //     let nh: i32 = (nk / 2) as i32;
+
+    //     let ew0 = up32(ne01 as i32) as usize;
+
+    //     let mut ker_f16: Vec<f16> = vec![f16::from_f32(0.0); ne02 * ew0 * ne00];
+
+    //     for i02 in 0..ne02 {
+    //         for i01 in 0..ne01 {
+    //             let src_start = i02 * nb02 + i01 * nb01;
+    //             //  let src_end = src_start + ne00;
+    //             let src_slice = &kernel[src_start..];
+
+    //             let dst_start = i02 * ew0 * ne00;
+    //             // let dst_end = dst_start + ne00 * ew0;
+    //             let dst_slice = &mut ker_f16[dst_start..];
+    //             for i00 in 0..ne00 {
+    //                 dst_slice[i00 * ew0 + i01] = src_slice[i00];
+    //             }
+    //         }
+    //     }
+
+    //     let mut inp_f16: Vec<f16> =
+    //         vec![f16::from_f32(0.0); (ne10 + nh as usize) * ew0 * ne11 + ew0];
+    //     for i11 in 0..ne11 {
+    //         let src_chunk = &inp[i11 * nb11..];
+
+    //         for i10 in 0..ne10 {
+    //             let index = (i10 + nh as usize) * ew0 + i11;
+    //             inp_f16[index] = f16::from_f32(src_chunk[i10]);
+    //         }
+    //     }
+
+    //     // total rows in dst
+    //     let nr = ne02;
+
+    //     // rows per thread
+    //     let dr = nr; //(nr + nth - 1) / nth;
+
+    //     // row range for this thread
+    //     let ir0 = 0; //dr * ith;
+    //     let ir1 = std::cmp::min(ir0 + dr, nr);
+
+    //     // unsafe {
+    //     //     for i1 in ir0..ir1 {
+    //     //         let dst_data = &mut dst[i1 * nb1..];
+
+    //     //         for i0 in 0..ne10 {
+    //     //             dst_data[i0] = 0.0;
+    //     //             for k in -nh..=nh {
+    //     //                 let mut v = 0.0f32;
+    //     //                 let wdata1_idx =
+    //     //                     ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+    //     //                 let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+    //     //                 let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+    //     //                 let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+    //     //                 unsafe { vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+    //     //                 dst_data[i0] += v;
+    //     //             }
+    //     //         }
+    //     //     }
+    //     // }
+    //     unsafe {
+    //         dst.par_chunks_mut(nb1)
+    //             .enumerate()
+    //             .for_each(|(i1, dst_data)| {
+    //                 for i0 in 0..ne10 {
+    //                     dst_data[i0] = 0.0;
+    //                     for k in -nh..=nh {
+    //                         let mut v = 0.0f32;
+    //                         let wdata1_idx =
+    //                             ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+    //                         let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+    //                         let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+    //                         let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+    //                         vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0);
+    //                         dst_data[i0] += v;
+    //                     }
+    //                 }
+    //             });
+    //     }
+    //     let time2 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+    //     println!("{} time:{} ms", Self::OP, time2 - time1);
+    //     // (0..nr).into_par_iter().for_each(|i1| {
+    //     //     let dst_data = &mut dst[i1 * nb1..];
+
+    //     //     for i0 in 0..ne10 {
+    //     //         dst_data[i0] = 0.0;
+    //     //         for k in -nh..=nh {
+    //     //             let mut v = 0.0f32;
+    //     //             let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+    //     //             let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+    //     //             let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+    //     //             let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+    //     //             unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+    //     //             dst_data[i0] += v;
+    //     //         }
+    //     //     }
+    //     // });
+
+    //     Ok(())
+    // }
 
     fn f_quant_f32<T: QuantType>(
         &self,
@@ -635,148 +795,184 @@ struct Conv1D2S;
 impl Map2 for Conv1D2S {
     const OP: &'static str = "conv1d2s";
 
-    fn f_f16_f32(
+    fn f_quant_num<T: QuantType, X>(
         &self,
-        kernel: &[f16],
-        k_d: &Dim,
-        inp: &[f32],
-        inp_d: &Dim,
-        dst: &mut [f32],
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [X],
         dst_d: &Dim,
     ) -> GResult<()> {
-        let (ne00, ne01, ne02) = k_d.dim3();
-
-        let (ne10, ne11) = inp_d.dim2();
-        let (nb00, nb01, nb02) = k_d.stride_3d();
-        let (nb10, nb11) = inp_d.stride_2d();
-
-        let nb1 = dst_d.stride()[1];
-
-        let ith = 0;
-        let nth: usize = 1;
-
-        let nk = ne00;
-        let nh: i32 = (nk / 2) as i32;
-
-        let ew0 = up32(ne01 as i32) as usize;
-
-        assert!(ne00 % 2 == 1);
-        assert!(nb00 == 1);
-        assert!(nb10 == 1);
-
-        let mut ker_f16: Vec<f16> = vec![f16::from_f32(0.0); ne02 * ew0 * ne00];
-
-        (0..ne02)
-            .flat_map(|i02| (0..ne01).map(move |i01| (i02, i01)))
-            .for_each(|(i02, i01)| {
-                let src_start = i02 * nb02 + i01 * nb01;
-                let src_slice = &kernel[src_start..];
-
-                let dst_start = i02 * ew0 * ne00;
-                let dst_slice = &mut ker_f16[dst_start..];
-
-                (0..ne00).zip(src_slice.iter()).for_each(|(i00, &src_val)| {
-                    dst_slice[i00 * ew0 + i01] = src_val;
-                });
-            });
-
-        // for i02 in 0..ne02 {
-        //     for i01 in 0..ne01 {
-        //         let src_start = i02 * nb02 + i01 * nb01;
-        //         //  let src_end = src_start + ne00;
-        //         let src_slice = &kernel[src_start..];
-
-        //         let dst_start = i02 * ew0 * ne00;
-        //         // let dst_end = dst_start + ne00 * ew0;
-        //         let dst_slice = &mut ker_f16[dst_start..];
-        //         for i00 in 0..ne00 {
-        //             dst_slice[i00 * ew0 + i01] = src_slice[i00];
-        //         }
-        //     }
-        // }
-
-        // Create a vector of (i02, i01) pairs
-        // let indices: Vec<(usize, usize)> = (0..ne02)
-        //     .flat_map(|i02| (0..ne01).map(move |i01| (i02, i01)))
-        //     .collect();
-
-        // indices.par_iter().for_each(|&(i02, i01)| {
-        //     let src_start = i02 * nb02 + i01 * nb01;
-        //     let src_slice = &kernel[src_start..];
-
-        //     let dst_start = i02 * ew0 * ne00;
-        //     let dst_slice = &mut ker_f16[dst_start..];
-
-        //     (0..ne00).zip(src_slice.iter()).for_each(|(i00, &src_val)| {
-        //         dst_slice[i00 * ew0 + i01] = src_val;
-        //     });
-        // });
-
-        let mut inp_f16: Vec<f16> =
-            vec![f16::from_f32(0.0); (ne10 + nh as usize) * ew0 * ne11 + ew0];
-
-        for i11 in 0..ne11 {
-            let src_chunk = &inp[i11 * nb11..];
-            for i10 in 0..ne10 {
-                let index = (i10 + nh as usize) * ew0 + i11;
-                inp_f16[index] = f16::from_f32(src_chunk[i10]);
-            }
-        }
-        let time1 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        dst.par_chunks_mut(nb1)
-            .enumerate()
-            .for_each(|(i1, dst_data)| {
-                for i0 in (0..ne10).step_by(2) {
-                    dst_data[i0 / 2] = 0.0;
-                    for k in -nh..=nh {
-                        let mut v = 0.0f32;
-                        let wdata1_idx =
-                            ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
-                        let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-                        let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
-                        let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-                        unsafe { vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
-                        dst_data[i0 / 2] += v;
-                    }
-                }
-            });
-
-        // total rows in dst
-        // let nr = ne02;
-
-        // // // rows per thread
-        // let dr = (nr + nth - 1) / nth;
-
-        // // row range for this thread
-        // let ir0 = dr * ith;
-        // let ir1 = std::cmp::min(ir0 + dr, nr);
-
-        // for i1 in ir0..ir1 {
-        //     let dst_data = &mut dst[i1 * nb1..];
-
-        //     for i0 in (0..ne10).step_by(2) {
-        //         dst_data[i0 / 2] = 0.0;
-        //         for k in -nh..=nh {
-        //             let mut v = 0.0f32;
-        //             let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
-        //             let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
-        //             let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
-        //             let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
-        //             unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
-        //             dst_data[i0 / 2] += v;
-        //         }
-        //     }
-        // }
-        let time2 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        println!("{} time:{} ms", Self::OP, time2 - time1);
-        Ok(())
+        todo!()
     }
+
+    fn f_x_y_x<X, Y>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        k: &[Y],
+        k_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_quant_num2<T: QuantType, X, Y>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    // fn f_f16_f32(
+    //     &self,
+    //     kernel: &[f16],
+    //     k_d: &Dim,
+    //     inp: &[f32],
+    //     inp_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     let (ne00, ne01, ne02) = k_d.dim3();
+
+    //     let (ne10, ne11) = inp_d.dim2();
+    //     let (nb00, nb01, nb02) = k_d.stride_3d();
+    //     let (nb10, nb11) = inp_d.stride_2d();
+
+    //     let nb1 = dst_d.stride()[1];
+
+    //     let ith = 0;
+    //     let nth: usize = 1;
+
+    //     let nk = ne00;
+    //     let nh: i32 = (nk / 2) as i32;
+
+    //     let ew0 = up32(ne01 as i32) as usize;
+
+    //     assert!(ne00 % 2 == 1);
+    //     assert!(nb00 == 1);
+    //     assert!(nb10 == 1);
+
+    //     let mut ker_f16: Vec<f16> = vec![f16::from_f32(0.0); ne02 * ew0 * ne00];
+
+    //     (0..ne02)
+    //         .flat_map(|i02| (0..ne01).map(move |i01| (i02, i01)))
+    //         .for_each(|(i02, i01)| {
+    //             let src_start = i02 * nb02 + i01 * nb01;
+    //             let src_slice = &kernel[src_start..];
+
+    //             let dst_start = i02 * ew0 * ne00;
+    //             let dst_slice = &mut ker_f16[dst_start..];
+
+    //             (0..ne00).zip(src_slice.iter()).for_each(|(i00, &src_val)| {
+    //                 dst_slice[i00 * ew0 + i01] = src_val;
+    //             });
+    //         });
+
+    //     // for i02 in 0..ne02 {
+    //     //     for i01 in 0..ne01 {
+    //     //         let src_start = i02 * nb02 + i01 * nb01;
+    //     //         //  let src_end = src_start + ne00;
+    //     //         let src_slice = &kernel[src_start..];
+
+    //     //         let dst_start = i02 * ew0 * ne00;
+    //     //         // let dst_end = dst_start + ne00 * ew0;
+    //     //         let dst_slice = &mut ker_f16[dst_start..];
+    //     //         for i00 in 0..ne00 {
+    //     //             dst_slice[i00 * ew0 + i01] = src_slice[i00];
+    //     //         }
+    //     //     }
+    //     // }
+
+    //     // Create a vector of (i02, i01) pairs
+    //     // let indices: Vec<(usize, usize)> = (0..ne02)
+    //     //     .flat_map(|i02| (0..ne01).map(move |i01| (i02, i01)))
+    //     //     .collect();
+
+    //     // indices.par_iter().for_each(|&(i02, i01)| {
+    //     //     let src_start = i02 * nb02 + i01 * nb01;
+    //     //     let src_slice = &kernel[src_start..];
+
+    //     //     let dst_start = i02 * ew0 * ne00;
+    //     //     let dst_slice = &mut ker_f16[dst_start..];
+
+    //     //     (0..ne00).zip(src_slice.iter()).for_each(|(i00, &src_val)| {
+    //     //         dst_slice[i00 * ew0 + i01] = src_val;
+    //     //     });
+    //     // });
+
+    //     let mut inp_f16: Vec<f16> =
+    //         vec![f16::from_f32(0.0); (ne10 + nh as usize) * ew0 * ne11 + ew0];
+
+    //     for i11 in 0..ne11 {
+    //         let src_chunk = &inp[i11 * nb11..];
+    //         for i10 in 0..ne10 {
+    //             let index = (i10 + nh as usize) * ew0 + i11;
+    //             inp_f16[index] = f16::from_f32(src_chunk[i10]);
+    //         }
+    //     }
+    //     let time1 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+    //     dst.par_chunks_mut(nb1)
+    //         .enumerate()
+    //         .for_each(|(i1, dst_data)| {
+    //             for i0 in (0..ne10).step_by(2) {
+    //                 dst_data[i0 / 2] = 0.0;
+    //                 for k in -nh..=nh {
+    //                     let mut v = 0.0f32;
+    //                     let wdata1_idx =
+    //                         ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+    //                     let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+    //                     let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+    //                     let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+    //                     unsafe { vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+    //                     dst_data[i0 / 2] += v;
+    //                 }
+    //             }
+    //         });
+
+    //     // total rows in dst
+    //     // let nr = ne02;
+
+    //     // // // rows per thread
+    //     // let dr = (nr + nth - 1) / nth;
+
+    //     // // row range for this thread
+    //     // let ir0 = dr * ith;
+    //     // let ir1 = std::cmp::min(ir0 + dr, nr);
+
+    //     // for i1 in ir0..ir1 {
+    //     //     let dst_data = &mut dst[i1 * nb1..];
+
+    //     //     for i0 in (0..ne10).step_by(2) {
+    //     //         dst_data[i0 / 2] = 0.0;
+    //     //         for k in -nh..=nh {
+    //     //             let mut v = 0.0f32;
+    //     //             let wdata1_idx = ((i1 * ew0 * ne00) as i32 + (nh + k) * ew0 as i32) as usize; //kernel
+    //     //             let wdata2_idx = ((i0 as i32 + nh + k) * ew0 as i32) as usize; //src
+    //     //             let wdata1 = &ker_f16[wdata1_idx..wdata1_idx + ew0];
+    //     //             let wdata2 = &inp_f16[wdata2_idx..wdata2_idx + ew0];
+    //     //             unsafe { f16::vec_dot_f16(wdata1.as_ptr(), wdata2.as_ptr(), &mut v, ew0) }
+    //     //             dst_data[i0 / 2] += v;
+    //     //         }
+    //     //     }
+    //     // }
+    //     let time2 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+    //     println!("{} time:{} ms", Self::OP, time2 - time1);
+    //     Ok(())
+    // }
 
     fn f_quant_f32<T: QuantType>(
         &self,
@@ -795,6 +991,17 @@ struct Repeat;
 
 impl Map for Repeat {
     const OP: &'static str = "repeat";
+
+    fn f_x_y<X: TensorType, Y: TensorType>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
         let (inp_d0, inp_d1, inp_d2, inp_d3) = inp_d.dim4();
         let (dst_d0, dst_d1, dst_d2, dst_d3) = dst_d.dim4();
@@ -836,9 +1043,9 @@ impl Map for Repeat {
         self.f(inp, inp_d, dst, dst_d)
     }
 
-    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
-        Ok(())
-    }
+    // fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+    //     Ok(())
+    // }
 }
 
 struct Norm;
@@ -847,6 +1054,16 @@ impl Map for Norm {
     const OP: &'static str = "norm";
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
         Ok(())
+    }
+
+    fn f_x_y<X: TensorType, Y: TensorType>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
     }
 
     fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
@@ -914,12 +1131,14 @@ impl Map for Norm {
         Ok(())
     }
 
-    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
-        Ok(())
-    }
+    // fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+    //     Ok(())
+    // }
 }
 
-struct RmsNorm;
+struct RmsNorm {
+    eps: f32,
+}
 
 impl Map for RmsNorm {
     const OP: &'static str = "rms_norm";
@@ -928,7 +1147,7 @@ impl Map for RmsNorm {
         let (ne00, ne01, ne02, ne03) = inp_d.dim4();
         let (_, nb01, nb02, nb03) = inp_d.stride_4d();
         let (_, nb1, nb2, nb3) = dst_d.stride_4d();
-        let eps: f32 = 1e-5;
+        let eps: f32 = self.eps;
         for i03 in 0..ne03 {
             for i02 in 0..ne02 {
                 for i01 in 0..ne01 {
@@ -957,15 +1176,61 @@ impl Map for RmsNorm {
         todo!()
     }
 
-    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+    fn f_x_y<X: TensorType, Y: TensorType>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
         todo!()
     }
+
+    // fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+    //     todo!()
+    // }
 }
 
 struct MatMul;
 
 impl Map2 for MatMul {
     const OP: &'static str = "matmul";
+
+    fn f_quant_num<T: QuantType, X>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_x_y_x<X, Y>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        k: &[Y],
+        k_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_quant_num2<T: QuantType, X, Y>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
 
     fn f<T: TensorType>(
         &self,
@@ -1022,24 +1287,7 @@ impl Map2 for MatMul {
             .as_millis();
 
         let block_size = T::VecDotType::BLCK_SIZE;
-        println!("block_size:{}", block_size);
         let mut quant_list = vec![T::VecDotType::zero(); rhs.len() / block_size];
-        // T::VecDotType::from_f32(rhs, &mut quant_list)?;
-
-        // for (int i13 = 0; i13 < ne13; ++i13)
-        // {
-        //     for (int i12 = 0; i12 < ne12; ++i12)
-        //     {
-        //         for (int i11 = 0; i11 < ne11; ++i11)
-        //         {
-        //             // for (int i10 = 0; i10 < ne10; ++i10) {
-        //             //     wdata[id++] = GGML_FP32_TO_FP16(*(float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11 + i10*nb10));
-        //             // }
-        //             quantize_row_q4_0((float *)((char *)src1->data + i13 * nb13 + i12 * nb12 + i11 * nb11), (void *)wdata, ne10);
-        //             wdata += (ne10 * GGML_TYPE_SIZE[GGML_TYPE_Q4_0]) / GGML_BLCK_SIZE[GGML_TYPE_Q4_0];
-        //         }
-        //     }
-        // }
         let (ne00, ne01, ne02, ne03) = lhs_l.dim4();
         let (ne10, ne11, ne12, ne13) = rhs_l.dim4();
 
@@ -1062,25 +1310,6 @@ impl Map2 for MatMul {
                 }
             }
         }
-
-        println!(
-            "ne00:{}, ne01:{}, ne02:{}, ne03:{}\n",
-            ne00, ne01, ne02, ne03,
-        );
-        println!(
-            "ne10:{}, ne11:{}, ne12:{}, ne13:{}\n",
-            ne10, ne11, ne12, ne13,
-        );
-        println!("ne0:{}, ne1:{}, ne2:{}, ne3:{}\n", ne0, ne1, ne2, ne3);
-        println!(
-            "nb00:{}, nb01:{}, nb02:{}, nb03:{}\n",
-            nb00, nb01, nb02, nb03,
-        );
-        println!(
-            "nb10:{}, nb11:{}, nb12:{}, nb13:{}\n",
-            nb10, nb11, nb12, nb13,
-        );
-        println!("nb0:{}, nb1:{}, nb2:{}, nb3:{}\n", nb0, nb1, nb2, nb3);
 
         assert!(ne0 == ne01);
         assert!(ne1 == ne11);
@@ -1225,82 +1454,82 @@ impl Map2 for MatMul {
         return Ok(());
     }
 
-    fn f_f16_f32(
-        &self,
-        lhs: &[f16],
-        lhs_l: &Dim,
-        rhs: &[f32],
-        rhs_l: &Dim,
-        dst: &mut [f32],
-        dst_d1: &Dim,
-    ) -> GResult<()> {
-        let time1 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        let rhs_f16: Vec<f16> = rhs.par_iter().map(|e| f16::from_f32(*e)).collect();
+    // fn f_f16_f32(
+    //     &self,
+    //     lhs: &[f16],
+    //     lhs_l: &Dim,
+    //     rhs: &[f32],
+    //     rhs_l: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d1: &Dim,
+    // ) -> GResult<()> {
+    //     let time1 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+    //     let rhs_f16: Vec<f16> = rhs.par_iter().map(|e| f16::from_f32(*e)).collect();
 
-        let (ne00, ne01, ne02, ne03) = lhs_l.dim4();
-        let (ne10, ne11, ne12, ne13) = rhs_l.dim4();
+    //     let (ne00, ne01, ne02, ne03) = lhs_l.dim4();
+    //     let (ne10, ne11, ne12, ne13) = rhs_l.dim4();
 
-        let (ne0, ne1, ne2, ne3) = dst_d1.dim4();
+    //     let (ne0, ne1, ne2, ne3) = dst_d1.dim4();
 
-        let (nb00, nb01, nb02, nb03) = lhs_l.stride_4d();
-        let (nb10, nb11, nb12, nb13) = rhs_l.stride_4d();
-        let (nb0, nb1, nb2, nb3) = dst_d1.stride_4d();
-        //const int64_t ne   = ne0*ne1*ne2*ne3;
+    //     let (nb00, nb01, nb02, nb03) = lhs_l.stride_4d();
+    //     let (nb10, nb11, nb12, nb13) = rhs_l.stride_4d();
+    //     let (nb0, nb1, nb2, nb3) = dst_d1.stride_4d();
+    //     //const int64_t ne   = ne0*ne1*ne2*ne3;
 
-        let ith = 0;
-        let nth = 1;
+    //     let ith = 0;
+    //     let nth = 1;
 
-        let nr = ne01 * ne02 * ne03;
+    //     let nr = ne01 * ne02 * ne03;
 
-        // rows per thread
-        let dr = (nr + nth - 1) / nth;
+    //     // rows per thread
+    //     let dr = (nr + nth - 1) / nth;
 
-        // row range for this thread
-        let ir0 = dr * ith;
-        let ir1 = std::cmp::min(ir0 + dr, nr);
+    //     // row range for this thread
+    //     let ir0 = dr * ith;
+    //     let ir1 = std::cmp::min(ir0 + dr, nr);
 
-        //   ggml_fp16_t * wdata = params->wdata;
+    //     //   ggml_fp16_t * wdata = params->wdata;
 
-        for ir in ir0..ir1 {
-            // src0 indices
-            let i03 = ir / (ne02 * ne01);
-            let i02 = (ir - i03 * ne02 * ne01) / ne01;
-            let i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
+    //     for ir in ir0..ir1 {
+    //         // src0 indices
+    //         let i03 = ir / (ne02 * ne01);
+    //         let i02 = (ir - i03 * ne02 * ne01) / ne01;
+    //         let i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
 
-            let i13 = i03;
-            let i12 = i02;
+    //         let i13 = i03;
+    //         let i12 = i02;
 
-            let i0 = i01;
-            let i2 = i02;
-            let i3 = i03;
+    //         let i0 = i01;
+    //         let i2 = i02;
+    //         let i3 = i03;
 
-            let src0_row = &lhs[i01 * nb01 + i02 * nb02 + i03 * nb03..];
-            let src1_col = &rhs_f16[(0 + i12 * ne11 + i13 * ne12 * ne11) * ne00..];
+    //         let src0_row = &lhs[i01 * nb01 + i02 * nb02 + i03 * nb03..];
+    //         let src1_col = &rhs_f16[(0 + i12 * ne11 + i13 * ne12 * ne11) * ne00..];
 
-            let dst_col = &mut dst[i0 * nb0 + 0 * nb1 + i2 * nb2 + i3 * nb3..];
+    //         let dst_col = &mut dst[i0 * nb0 + 0 * nb1 + i2 * nb2 + i3 * nb3..];
 
-            for ic in 0..ne11 {
-                //  assert!(ne00 % 32 == 0);
-                unsafe {
-                    vec_dot_f16(
-                        src0_row.as_ptr(),
-                        src1_col[ic * ne00..].as_ptr(),
-                        dst_col[ic * ne0..].as_mut_ptr(),
-                        ne00,
-                    )
-                }
-            }
-        }
-        let time2 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        println!("{} time:{} ms", Self::OP, time2 - time1);
-        return Ok(());
-    }
+    //         for ic in 0..ne11 {
+    //             //  assert!(ne00 % 32 == 0);
+    //             unsafe {
+    //                 vec_dot_f16(
+    //                     src0_row.as_ptr(),
+    //                     src1_col[ic * ne00..].as_ptr(),
+    //                     dst_col[ic * ne0..].as_mut_ptr(),
+    //                     ne00,
+    //                 )
+    //             }
+    //         }
+    //     }
+    //     let time2 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+    //     println!("{} time:{} ms", Self::OP, time2 - time1);
+    //     return Ok(());
+    // }
 }
 
 struct Cpy;
@@ -1363,33 +1592,141 @@ impl Map for Cpy {
         self.f(inp, inp_d, dst, dst_d)
     }
 
-    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
-        assert!(dst_d.ggml_is_contiguous());
-        assert_eq!(inp_d.elem_count(), dst_d.elem_count());
-
-        let mut id: usize = 0;
-        // ggml_fp16_t *dst_ptr = (ggml_fp16_t *)dst->data;
-
+    fn f_x_y<X: TensorType, Y: TensorType>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
         let (ne00, ne01, ne02, ne03) = inp_d.dim4();
         let (nb00, nb01, nb02, nb03) = inp_d.stride_4d();
 
-        // dst.par_iter_mut()
-        //     .zip(inp.par_iter())
-        //     .for_each(|(d, a)| *d = f16::from_f32(*a));
+        let nr = ne01;
+        // number of rows per thread
+        let dr = nr;
+        // row range for this thread
+        let ir0 = 0;
+        let ir1 = dr;
 
-        for i03 in 0..ne03 {
-            for i02 in 0..ne02 {
-                for i01 in 0..ne01 {
-                    for i00 in 0..ne00 {
-                        let src0_ptr = inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
-                        dst[id] = f16::from_f32(src0_ptr);
-                        id = id + 1;
+        if dst_d.ggml_is_contiguous() {
+            //连续
+            if nb00 == 1 {
+                let mut id: usize = 0;
+                for i03 in 0..ne03 {
+                    for i02 in 0..ne02 {
+                        for i01 in 0..ne01 {
+                            for i00 in 0..ne00 {
+                                let src0_ptr =
+                                    inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
+                                dst[id] = Y::from_x(src0_ptr);
+                                id = id + 1;
+                            }
+                        }
+                    }
+                }
+            } else {
+                todo!()
+            }
+        } else {
+            let (ne0, ne1, ne2, ne3) = dst_d.dim4();
+            let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+            let mut i10 = 0;
+            let mut i11 = 0;
+            let mut i12 = 0;
+            let mut i13 = 0;
+            for i03 in 0..ne03 {
+                for i02 in 0..ne02 {
+                    i10 += ne00 * ir0;
+                    while i10 >= ne0 {
+                        i10 -= ne0;
+                        i11 += 1;
+                        if i11 == ne1 {
+                            i11 = 0;
+                            i12 += 1;
+                            if i12 == ne2 {
+                                i12 = 0;
+                                i13 += 1;
+                                if i13 == ne3 {
+                                    i13 = 0;
+                                }
+                            }
+                        }
+                    }
+
+                    for i01 in ir0..ir1 {
+                        for i00 in 0..ne00 {
+                            let src0_ptr = &inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
+                            let dst_ptr = &mut dst[i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3];
+
+                            *dst_ptr = Y::from_x(*src0_ptr);
+                            i10 += 1;
+                            if i10 == ne0 {
+                                i10 = 0;
+                                i11 += 1;
+                                if i11 == ne1 {
+                                    i11 = 0;
+                                    i12 += 1;
+                                    if i12 == ne2 {
+                                        i12 = 0;
+                                        i13 += 1;
+                                        if i13 == ne3 {
+                                            i13 = 0;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    i10 += ne00 * (ne01 - ir1);
+                    while i10 >= ne0 {
+                        i10 -= ne0;
+                        i11 += 1;
+                        if i11 == ne1 {
+                            i11 = 0;
+                            i12 += 1;
+                            if i12 == ne2 {
+                                i12 = 0;
+                                i13 += 1;
+                                if i13 == ne3 {
+                                    i13 = 0;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         Ok(())
     }
+
+    // fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+    //     assert!(dst_d.ggml_is_contiguous());
+    //     assert_eq!(inp_d.elem_count(), dst_d.elem_count());
+
+    //     let mut id: usize = 0;
+    //     // ggml_fp16_t *dst_ptr = (ggml_fp16_t *)dst->data;
+
+    //     let (ne00, ne01, ne02, ne03) = inp_d.dim4();
+    //     let (nb00, nb01, nb02, nb03) = inp_d.stride_4d();
+
+    //     // dst.par_iter_mut()
+    //     //     .zip(inp.par_iter())
+    //     //     .for_each(|(d, a)| *d = f16::from_f32(*a));
+
+    //     for i03 in 0..ne03 {
+    //         for i02 in 0..ne02 {
+    //             for i01 in 0..ne01 {
+    //                 for i00 in 0..ne00 {
+    //                     let src0_ptr = inp[i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03];
+    //                     dst[id] = f16::from_f32(src0_ptr);
+    //                     id = id + 1;
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     Ok(())
+    // }
 }
 
 struct FlashAttn;
@@ -1615,6 +1952,43 @@ struct Scale;
 
 impl Map2 for Scale {
     const OP: &'static str = "scale";
+
+    fn f_quant_num<T: QuantType, X>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_x_y_x<X, Y>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        k: &[Y],
+        k_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_quant_num2<T: QuantType, X, Y>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
     fn f<T: TensorType>(
         &self,
         inp0: &[T],
@@ -1681,14 +2055,13 @@ impl Map2 for Scale {
 
         // scale factor
         let v = inp1[0];
+        println!("v:{}", v);
 
         let ith = 0;
         let nth = 1;
 
         let nc = inp0_d.dim1();
         let nr = inp0_d.nrows();
-
-        let (_, nb1) = dst_d.stride_2d();
 
         // rows per thread
         let dr = (nr + nth - 1) / nth;
@@ -1697,7 +2070,13 @@ impl Map2 for Scale {
         let ir0 = dr * ith;
         let ir1 = std::cmp::min(ir0 + dr, nr);
 
+        let (_, nb01) = inp0_d.stride_2d();
+        let (_, nb1) = dst_d.stride_2d();
+
         for i1 in ir0..ir1 {
+            if dst.as_ptr() != inp0.as_ptr() {
+                dst[i1 * nb1..i1 * nb1 + nc].copy_from_slice(&inp0[i1 * nb01..i1 * nb01 + nc]);
+            }
             vec_scale_f32(nc, &mut dst[i1 * nb1..], v);
         }
         Ok(())
@@ -1708,6 +2087,43 @@ struct GetRows;
 
 impl Map2 for GetRows {
     const OP: &'static str = "get_rows";
+
+    fn f_quant_num<T: QuantType, X>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_x_y_x<X, Y>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        k: &[Y],
+        k_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_quant_num2<T: QuantType, X, Y>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
     fn f_Q40_I32_f32(
         &self,
         inp0: &[BlockQ4_0],
@@ -1727,7 +2143,7 @@ impl Map2 for GetRows {
         assert!(inp0_d.stride_1d() == 1);
         for i in 0..nr {
             let r = inp1[i] as usize;
-            BlockQ4_0::to_f32(
+            <BlockQ4_0 as QuantType>::to_f32(
                 &inp0[r * nbv1..r * nbv1 + nc],
                 &mut dst[i * nbd1..i * nbd1 + nc],
             )
@@ -1745,6 +2161,289 @@ impl Map2 for GetRows {
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
+    }
+}
+
+struct RopeCustom {
+    n_dims: usize,
+    mode: i32,
+    n_ctx: i32,
+    freq_base: f32,
+    freq_scale: f32,
+    xpos_base: f32,
+    xpos_down: bool,
+}
+
+impl Map2 for RopeCustom {
+    const OP: &'static str = "rope_custom";
+    fn f<T: TensorType>(
+        &self,
+        inp: &[T],
+        inp_d: &Dim,
+        k: &[T],
+        k_d: &Dim,
+        dst: &mut [T],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_x_y_x<X: TensorType, Y: TensorType>(
+        &self,
+        lhs: &[X],
+        lhs_l: &Dim,
+        rhs: &[Y],
+        rhs_l: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        let n_dims = self.n_dims;
+
+        let mode = self.mode;
+        let n_ctx = self.n_ctx;
+        let freq_base = self.freq_base;
+        let freq_scale = self.freq_scale;
+        let xpos_base = self.xpos_base;
+        let xpos_down = self.xpos_down;
+
+        let (ne00, ne01, ne02, ne03) = lhs_l.dim4();
+        let (ne10, ne11, ne12, ne13) = rhs_l.dim4();
+        let (ne0, ne1, ne2, ne3) = dst_d.dim4();
+        let (nb00, nb01, nb02, nb03) = lhs_l.stride_4d();
+        let (nb10, nb11, nb12, nb13) = rhs_l.stride_4d();
+        let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+
+        //printf("ne0: %d, ne1: %d, ne2: %d, ne3: %d\n", ne0, ne1, ne2, ne3);
+        //printf("n_past = %d, ne2 = %d\n", n_past, ne2);
+
+        assert!(nb00 == 1);
+
+        let ith = 0;
+        let nth = 1;
+
+        let nr = dst_d.nrows();
+
+        assert!(n_dims <= ne0);
+        assert!(n_dims % 2 == 0);
+
+        // rows per thread
+        let dr = nr; //(nr + nth - 1) / nth;
+
+        // row range for this thread
+        let ir0 = 0; //dr * ith;
+        let ir1 = nr; //min(ir0 + dr, nr);
+
+        // row index used to determine which thread to use
+        let mut ir = 0;
+
+        let theta_scale = (freq_base as f32).powf(-2.0 / n_dims as f32);
+        println!("theta_scale{}", theta_scale);
+
+        let is_neox = mode & 2 != 0;
+        let is_glm = mode & 4 != 0;
+
+        for i3 in 0..ne3 {
+            for i2 in 0..ne2 {
+                let p = rhs[i2].to_f32();
+                for i1 in 0..ne1 {
+                    if ir < ir0 {
+                        ir += 1;
+                        continue;
+                    }
+
+                    if ir > ir1 {
+                        break;
+                    }
+                    ir += 1;
+                    //ir += 1; // 如果通过了第二个条件，执行这行代码
+                    let mut theta = freq_scale * p.to_f32();
+                    if is_glm {
+                        todo!()
+                    } else if !is_neox {
+                        for i0 in (0..ne0).step_by(2) {
+                            let cos_theta = theta.cos();
+                            let sin_theta = theta.sin();
+
+                            let mut zeta = if xpos_base != 0.0 {
+                                ((i0 as f32 + 0.4f32 * ne0 as f32) / (1.4f32 * ne0 as f32))
+                                    .powf(p / xpos_base)
+                            } else {
+                                1.0
+                            };
+                            if xpos_down {
+                                zeta = 1.0f32 / zeta;
+                            }
+                            theta *= theta_scale;
+                            let src = &lhs[i3 * nb03 + i2 * nb02 + i1 * nb01 + i0 * nb00..];
+                            let dst_data = &mut dst[i3 * nb3 + i2 * nb2 + i1 * nb1 + i0 * nb0..];
+
+                            let x0 = src[0];
+                            let x1 = src[1];
+                            dst_data[0] = X::from_f32(
+                                x0.to_f32() * cos_theta * zeta - x1.to_f32() * sin_theta * zeta,
+                            );
+                            dst_data[1] = X::from_f32(
+                                x0.to_f32() * sin_theta * zeta + x1.to_f32() * cos_theta * zeta,
+                            );
+                        }
+                    } else {
+                        todo!()
+                    }
+                    // rest of the code goes here
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn f_quant_num<T: QuantType, X>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_quant_num2<T: QuantType, X, Y>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_quant_f32<T: QuantType>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[f32],
+        inp2_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+}
+
+struct Silu;
+impl Map for Silu {
+    const OP: &'static str = "silu";
+    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
+        todo!()
+    }
+    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+        let ith = 0;
+        let nth = 1;
+
+        let nc = inp_d.dim1();
+        let nr = inp_d.nrows();
+
+        let (nb00, nb01) = inp_d.stride_2d();
+        let (nb0, nb1) = dst_d.stride_2d();
+
+        // rows per thread
+        let dr = (nr + nth - 1) / nth;
+
+        // row range for this thread
+        let ir0 = dr * ith;
+        let ir1 = min(ir0 + dr, nr);
+
+        for i1 in ir0..ir1 {
+            vec_silu_f32(nc, &mut dst[i1 * nb1..], &inp[i1 * nb01..]);
+        }
+
+        Ok(())
+    }
+
+    fn f_x_y<X: TensorType, Y: TensorType>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+}
+
+struct SoftMax;
+
+impl Map for SoftMax {
+    const OP: &'static str = "soft max";
+    fn f_x_y<X: TensorType, Y: TensorType>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
+        todo!()
+    }
+    fn f_f32(&self, inp0: &[f32], inp0_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+        let ith = 0;
+        let nth = 1;
+
+        let (nb00, nb01, nb02, nb03) = inp0_d.stride_4d();
+        let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+
+        let nc = inp0_d.dim1();
+        let nr = inp0_d.nrows();
+
+        // rows per thread
+        let dr = (nr + nth - 1) / nth;
+
+        // row range for this thread
+        let ir0 = dr * ith;
+        let ir1 = min(ir0 + dr, nr);
+
+        for i1 in ir0..ir1 {
+            let sp = &inp0[i1 * nb01..];
+            let dp = &mut dst[i1 * nb1..];
+
+            // softmax
+            {
+                let mut max = -std::f32::INFINITY;
+                for i in 0..nc {
+                    max = max.max(sp[i]) //f32::max(max, );
+                }
+
+                let mut sum: f32 = 0.0;
+
+                //  let ss: u16 = 0;
+                for i in 0..nc {
+                    if sp[i] == -std::f32::INFINITY {
+                        dp[i] = 0.0;
+                    } else {
+                        //const float val = (S[i] == -INFINITY) ? 0.0 : exp(S[i] - max);
+                        let s = (sp[i] - max).to_f16();
+                        // let ss: u16 = unsafe { std::mem::transmute(s) };
+                        let val = GLOBAL_CPU_DEVICE_CACHE
+                            .get_exp_cache(s.to_bits() as usize)
+                            .to_f32();
+                        sum += val;
+                        dp[i] = val;
+                    }
+                }
+
+                assert!(sum > 0.0f32);
+
+                sum = 1.0 / sum;
+                vec_scale_f32(nc, dp, sum);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1852,11 +2551,11 @@ pub fn galois_norm(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_rms_norm(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+pub fn galois_rms_norm(src: &Tensor, dst: &mut Tensor, eps: f32) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
     match (src.device(), dst_device) {
         (Device::Cpu(s), Device::Cpu(d)) => {
-            RmsNorm.map(s, src.dim(), d, dst_dim)?;
+            RmsNorm { eps }.map(s, src.dim(), d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -1878,12 +2577,56 @@ pub fn galois_cpy(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
+pub fn galois_cont(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(d)) => {
+            Cpy.map(s, src.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
 pub fn galois_flash_attn(Q: &Tensor, K: &Tensor, V: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
     match (Q.device(), K.device(), V.device(), dst_device) {
         (Device::Cpu(q), Device::Cpu(k), Device::Cpu(v), Device::Cpu(d)) => {
             FlashAttn.map(q, Q.dim(), k, K.dim(), v, V.dim(), d, dst_dim)?;
         }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
+pub fn galois_soft_max(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(d)) => {
+            SoftMax.map(s, src.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
+pub fn galois_unary(src: &Tensor, dst: &mut Tensor, op: UnaryOp) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src.device(), dst_device) {
+        (Device::Cpu(s), Device::Cpu(d)) => match op {
+            UnaryOp::Silu => {
+                Silu.map(s, src.dim(), d, dst_dim)?;
+            }
+            _ => {
+                todo!()
+            }
+        },
         _ => {
             todo!()
         }
@@ -1917,13 +2660,58 @@ pub fn galois_get_rows(src0: &Tensor, src1: &Tensor, dst: &mut Tensor) -> GResul
     Ok(())
 }
 
+pub struct RopeCustomOption {
+    pub n_dims: usize,
+    pub mode: i32,
+    pub n_ctx: i32,
+    pub freq_base: f32,
+    pub freq_scale: f32,
+    pub xpos_base: f32,
+    pub xpos_down: bool,
+}
+
+pub fn galois_rope_custom(
+    op: RopeCustomOption,
+    src0: &Tensor,
+    src1: &Tensor,
+    dst: &mut Tensor,
+) -> GResult<()> {
+    let (dst_device, dst_dim) = dst.device_dim();
+    match (src0.device(), src1.device(), dst_device) {
+        (Device::Cpu(s0), Device::Cpu(s1), Device::Cpu(d)) => {
+            RopeCustom {
+                n_dims: op.n_dims,
+                mode: op.mode,
+                n_ctx: op.n_ctx,
+                freq_base: op.freq_base,
+                freq_scale: op.freq_scale,
+                xpos_base: op.xpos_base,
+                xpos_down: op.xpos_down,
+            }
+            .map(s0, src0.dim(), s1, src1.dim(), d, dst_dim)?;
+        }
+        _ => {
+            todo!()
+        }
+    }
+    Ok(())
+}
+
 trait Map {
     const OP: &'static str;
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()>;
 
+    fn f_x_y<X: TensorType, Y: TensorType>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()>;
+
     fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()>;
 
-    fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()>;
+    //fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()>;
 
     fn map(&self, dev1: &CpuDevice, d1: &Dim, dst: &mut CpuDevice, d3: &Dim) -> GResult<()> {
         match (dev1, dst) {
@@ -1934,7 +2722,7 @@ trait Map {
                 self.f_f32(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::F16(d)) => {
-                self.f_f32_f16(v1.as_slice(), d1, d.as_slice_mut(), d3)
+                self.f_x_y(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
             _ => {
                 todo!()
@@ -1956,6 +2744,36 @@ trait Map2 {
     ) -> GResult<()> {
         todo!()
     }
+
+    fn f_x_y_x<X: TensorType, Y: TensorType>(
+        &self,
+        inp: &[X],
+        inp_d: &Dim,
+        k: &[Y],
+        k_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()>;
+
+    fn f_quant_num<T: QuantType, X>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()>;
+
+    fn f_quant_num2<T: QuantType, X, Y>(
+        &self,
+        inp1: &[T],
+        inp1_d: &Dim,
+        inp2: &[X],
+        inp2_d: &Dim,
+        dst: &mut [Y],
+        dst_d: &Dim,
+    ) -> GResult<()>;
 
     fn f_quant_f32<T: QuantType>(
         &self,
@@ -2003,17 +2821,17 @@ trait Map2 {
     //     todo!()
     // }
 
-    fn f_f16_f32(
-        &self,
-        k: &[f16],
-        k_d: &Dim,
-        inp: &[f32],
-        inp_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_f16_f32(
+    //     &self,
+    //     k: &[f16],
+    //     k_d: &Dim,
+    //     inp: &[f32],
+    //     inp_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     fn map(
         &self,
@@ -2032,13 +2850,19 @@ trait Map2 {
                 self.f_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::F16(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
-                self.f_f16_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+                self.f_quant_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::Q4_0(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
                 self.f_Q40_I32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::Q4_0(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
                 self.f_quant_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+            }
+            (CpuDevice::Q6K(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+                self.f_quant_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+            }
+            (CpuDevice::F32(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
+                self.f_x_y_x(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             _ => {
                 todo!()
@@ -2099,7 +2923,7 @@ mod tests {
     use half::vec;
 
     use super::*;
-
+    use crate::Shape;
     //  [[ F32(7.0), F32(10.0), F32(14.0)],
     //  [ F32(15.0), F32(22.0), F32(32.0)],
     //  [ F32(15.0), F32(22.0), F32(32.0)]]
@@ -2451,17 +3275,17 @@ mod tests {
 // // Recip,
 // // Sqr,
 // // Sqrt,
-pub trait UnaryOp {
-    fn _exp(&self) -> Self;
-    fn _ln(&self) -> Self;
-    fn _sin(&self) -> Self;
-    fn _cos(&self) -> Self;
-    fn _tanh(&self) -> Self;
-    fn _neg(&self) -> Self;
-    fn _recip(&self) -> Self;
-    fn _sqr(&self) -> Self;
-    fn _sqrt(&self) -> Self;
-}
+// pub trait UnaryOp {
+//     fn _exp(&self) -> Self;
+//     fn _ln(&self) -> Self;
+//     fn _sin(&self) -> Self;
+//     fn _cos(&self) -> Self;
+//     fn _tanh(&self) -> Self;
+//     fn _neg(&self) -> Self;
+//     fn _recip(&self) -> Self;
+//     fn _sqr(&self) -> Self;
+//     fn _sqrt(&self) -> Self;
+// }
 
 // macro_rules! impl_float_unary_op {
 //     ($a:ident) => {

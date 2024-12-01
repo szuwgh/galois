@@ -59,14 +59,23 @@ trait Map {
 struct Euclidean;
 
 impl Map for Euclidean {
+    #[cfg(not(target_feature = "avx2"))]
+    fn f32(&self, left: &[f32], right: &[f32]) -> f32 {
+        assert_eq!(left.len(), right.len());
+        left.iter()
+            .zip(right.iter()) // 将两个切片的元素配对
+            .map(|(l, r)| (l - r).powi(2)) // 计算差值的平方
+            .sum::<f32>() // 求和
+            .sqrt() // 计算平方根
+    }
+
+    #[cfg(target_feature = "avx2")]
     fn f32(&self, left: &[f32], right: &[f32]) -> f32 {
         unsafe {
             let len = left.len();
             let mut i = 0;
-
             // 初始化一个 AVX 向量用于存储平方和
             let mut sum = _mm256_setzero_ps();
-
             while i + 8 <= len {
                 let left_chunk = _mm256_loadu_ps(left.as_ptr().add(i));
                 let right_chunk = _mm256_loadu_ps(right.as_ptr().add(i));
@@ -79,19 +88,15 @@ impl Map for Euclidean {
 
                 i += 8;
             }
-
             let mut tail_sum = 0.0;
             while i < len {
                 let diff = left[i] - right[i];
                 tail_sum += diff * diff;
                 i += 1;
             }
-
             let mut sum_array = [0.0; 8];
             _mm256_storeu_ps(sum_array.as_mut_ptr(), sum);
-
             let simd_sum: f32 = sum_array.iter().sum();
-
             (simd_sum + tail_sum).sqrt()
         }
     }
