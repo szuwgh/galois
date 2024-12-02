@@ -1,4 +1,5 @@
 use core::time;
+use std::cell::UnsafeCell;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::ops::Neg;
@@ -8,6 +9,8 @@ use crate::ggml_quants::QuantType;
 use crate::Device;
 use crate::GError;
 use std::f32::INFINITY;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 //use super::broadcast::{broadcasting_binary_op, general_broadcasting};
 use crate::ggml_quants::BlockQ4_0;
 use crate::CpuDevice;
@@ -35,7 +38,7 @@ const EPR: usize = 8;
 const ARR: usize = STEP / EPR;
 
 lazy_static! {
-    static ref GLOBAL_CPU_DEVICE_CACHE: CpuDeviceCache = CpuDeviceCache::new();
+    pub(crate) static ref GLOBAL_CPU_DEVICE_CACHE: CpuDeviceCache = CpuDeviceCache::new();
 }
 
 #[inline]
@@ -71,28 +74,28 @@ fn compute_silu(x: f32) -> f32 {
     x / (1.0 + (-x).exp())
 }
 
-#[inline]
-fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
-    let n32 = n & !(STEP - 1);
-    let scale = std::simd::f32x32::splat(v);
-    y[..n32].chunks_exact_mut(STEP).for_each(|d| {
-        let va = std::simd::f32x32::from_slice(d);
-        let va = va * scale;
-        va.copy_to_slice(d);
-    });
-    for i in n32..n {
-        y[i] *= v;
-    }
-}
+// #[inline]
+// fn vec_scale_f32(n: usize, y: &mut [f32], v: f32) {
+//     let n32 = n & !(STEP - 1);
+//     let scale = std::simd::f32x32::splat(v);
+//     y[..n32].chunks_exact_mut(STEP).for_each(|d| {
+//         let va = std::simd::f32x32::from_slice(d);
+//         let va = va * scale;
+//         va.copy_to_slice(d);
+//     });
+//     for i in n32..n {
+//         y[i] *= v;
+//     }
+// }
 
-#[inline]
-fn vec_silu_f32(n: usize, y: &mut [f32], x: &[f32]) {
-    for i in 0..n {
-        y[i] = GLOBAL_CPU_DEVICE_CACHE
-            .get_silu_cache(f16::from_f32(x[i]).to_bits() as usize)
-            .to_f32()
-    }
-}
+// #[inline]
+// fn vec_silu_f32(n: usize, y: &mut [f32], x: &[f32]) {
+//     for i in 0..n {
+//         y[i] = GLOBAL_CPU_DEVICE_CACHE
+//             .get_silu_cache(f16::from_f32(x[i]).to_bits() as usize)
+//             .to_f32()
+//     }
+// }
 
 pub enum UnaryOp {
     Abs,
@@ -179,7 +182,7 @@ pub(crate) unsafe fn vec_dot_f16(x: *const f16, y: *const f16, c: *mut f32, k: u
 
 unsafe impl Sync for CpuDeviceCache {}
 
-struct CpuDeviceCache {
+pub(crate) struct CpuDeviceCache {
     gelu_cache: OnceCell<Vec<f16>>,
     exp_cache: OnceCell<Vec<f16>>,
     silu_cache: OnceCell<Vec<f16>>,
@@ -194,15 +197,15 @@ impl CpuDeviceCache {
         }
     }
 
-    fn get_gelu_cache(&self, i: usize) -> f16 {
+    pub(crate) fn get_gelu_cache(&self, i: usize) -> f16 {
         self.gelu_cache.get().unwrap()[i]
     }
 
-    fn get_silu_cache(&self, i: usize) -> f16 {
+    pub(crate) fn get_silu_cache(&self, i: usize) -> f16 {
         self.silu_cache.get().unwrap()[i]
     }
 
-    fn get_exp_cache(&self, i: usize) -> f16 {
+    pub(crate) fn get_exp_cache(&self, i: usize) -> f16 {
         self.exp_cache.get().unwrap()[i]
     }
 
@@ -302,53 +305,20 @@ struct Add;
 impl Map2 for Add {
     const OP: &'static str = "add";
 
-    fn f_quant_num<T: QuantType, X>(
+    fn f<T: TensorType>(
         &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
-
-    fn f_x_y_x<X, Y>(
-        &self,
-        inp: &[X],
-        inp_d: &Dim,
-        k: &[Y],
-        k_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
-
-    fn f_quant_num2<T: QuantType, X, Y>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [Y],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
-
-    fn f_f32(
-        &self,
-        inp0: &[f32],
+        inp0: &[T],
         inp0_d: &Dim,
-        inp1: &[f32],
+        inp1: &[T],
         inp1_d: &Dim,
-        dst: &mut [f32],
+        dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
         assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
-
+        let time1 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let ith: usize = 0;
         let nth: usize = 1;
 
@@ -371,29 +341,49 @@ impl Map2 for Add {
         let dr = (nr + nth - 1) / nth;
 
         // row range for this thread
-        let ir0 = dr * ith;
-        let ir1 = min(ir0 + dr, nr);
+        let ir0 = 0; //dr * ith;
+        let ir1 = nr; //min(ir0 + dr, nr);
 
         if nb10 == 1 {
-            for ir in ir0..ir1 {
-                let i03 = ir / (ne02 * ne01);
-                let i02 = (ir - i03 * ne02 * ne01) / ne01;
-                let i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
+            assert!(dst.len() % ne00 == 0);
+            dst.par_chunks_mut(ne00)
+                .enumerate()
+                .for_each(|(ir, dst_chunk)| {
+                    let i03 = ir / (ne02 * ne01);
+                    let i02 = (ir - i03 * ne02 * ne01) / ne01;
+                    let i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
 
-                let i13 = i03 % ne13;
-                let i12 = i02 % ne12;
-                let i11 = i01 % ne11;
+                    let i13 = i03 % ne13;
+                    let i12 = i02 % ne12;
+                    let i11 = i01 % ne11;
 
-                let dst_pos = i03 * nb3 + i02 * nb2 + i01 * nb1;
-                let src0_pos = i03 * nb03 + i02 * nb02 + i01 * nb01;
-                let src1_pos = i13 * nb13 + i12 * nb12 + i11 * nb11;
+                    let src0_pos = i03 * nb03 + i02 * nb02 + i01 * nb01;
+                    let src1_pos = i13 * nb13 + i12 * nb12 + i11 * nb11;
 
-                let dst_ptr = &mut dst[dst_pos..dst_pos + ne00];
-                let src0_ptr = &inp0[src0_pos..src0_pos + ne00];
-                let src1_ptr = &inp1[src1_pos..src1_pos + ne00];
+                    let src0_ptr = &inp0[src0_pos..src0_pos + ne00];
+                    let src1_ptr = &inp1[src1_pos..src1_pos + ne00];
 
-                simd_vec_add_f32(src0_ptr, src1_ptr, dst_ptr);
-            }
+                    T::vec_add(src0_ptr, src1_ptr, dst_chunk);
+                });
+            // (0..nr).into_iter().for_each(|ir| {
+            //     let i03 = ir / (ne02 * ne01);
+            //     let i02 = (ir - i03 * ne02 * ne01) / ne01;
+            //     let i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
+
+            //     let i13 = i03 % ne13;
+            //     let i12 = i02 % ne12;
+            //     let i11 = i01 % ne11;
+
+            //     let dst_pos = i03 * nb3 + i02 * nb2 + i01 * nb1;
+            //     let src0_pos = i03 * nb03 + i02 * nb02 + i01 * nb01;
+            //     let src1_pos = i13 * nb13 + i12 * nb12 + i11 * nb11;
+
+            //     let dst_ptr = &mut dst[dst_pos..dst_pos + ne00];
+            //     let src0_ptr = &inp0[src0_pos..src0_pos + ne00];
+            //     let src1_ptr = &inp1[src1_pos..src1_pos + ne00];
+
+            //     T::vec_add(src0_ptr, src1_ptr, dst_ptr);
+            // });
         } else {
             // for j in 0..n {
             //     let dst_ptr = &mut dst[j * nb1..];
@@ -403,50 +393,48 @@ impl Map2 for Add {
             //     }
             // }
             println!("不连续");
+            todo!()
 
-            dst.par_chunks_mut(nb1)
-                .enumerate()
-                .for_each(|(j, dst_ptr)| {
-                    let src0_ptr = &inp0[j * nb01..];
-                    for i in 0..nc {
-                        dst_ptr[i] = src0_ptr[i] + inp1[j * nb11 + i * nb10];
-                    }
-                });
+            // dst.par_chunks_mut(nb1)
+            //     .enumerate()
+            //     .for_each(|(j, dst_ptr)| {
+            //         let src0_ptr = &inp0[j * nb01..];
+            //         for i in 0..nc {
+            //             dst_ptr[i] = src0_ptr[i] + inp1[j * nb11 + i * nb10];
+            //         }
+            //     });
         }
-
+        let time2 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        println!("{} time:{} ns", Self::OP, time2 - time1);
         Ok(())
     }
 
-    fn f_quant_f32<T: QuantType>(
+    fn f_q_f32_f32<T: QuantType + TensorType>(
         &self,
-        inp1: &[T],
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[f32],
         inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
     }
-}
 
-struct Mul;
-
-impl Map2 for Mul {
-    const OP: &'static str = "mul";
-
-    fn f_quant_num<T: QuantType, X>(
+    fn f_q_x_f32<T: QuantType + TensorType, X: TensorType>(
         &self,
-        inp1: &[T],
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[X],
         inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [X],
+        dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
     }
-
     fn f_x_y_x<X, Y>(
         &self,
         inp: &[X],
@@ -459,43 +447,126 @@ impl Map2 for Mul {
         todo!()
     }
 
-    fn f_quant_num2<T: QuantType, X, Y>(
+    // fn f_f32(
+    //     &self,
+    //     inp0: &[f32],
+    //     inp0_d: &Dim,
+    //     inp1: &[f32],
+    //     inp1_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
+
+    //     let ith: usize = 0;
+    //     let nth: usize = 1;
+
+    //     let nr = inp0_d.nrows();
+    //     let nc = inp0_d.dim1();
+
+    //     let (ne00, ne01, ne02, ne03) = inp0_d.dim4();
+    //     let (ne10, ne11, ne12, ne13) = inp1_d.dim4();
+
+    //     // let (ne0, ne1, ne2, ne3) = dst_d.dim4();
+
+    //     let (nb00, nb01, nb02, nb03) = inp0_d.stride_4d();
+    //     let (nb10, nb11, nb12, nb13) = inp1_d.stride_4d();
+    //     let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+
+    //     assert!(nb0 == 1);
+    //     assert!(nb00 == 1);
+
+    //     // rows per thread
+    //     let dr = (nr + nth - 1) / nth;
+
+    //     // row range for this thread
+    //     let ir0 = dr * ith;
+    //     let ir1 = min(ir0 + dr, nr);
+
+    //     if nb10 == 1 {
+    //         for ir in ir0..ir1 {
+    //             let i03 = ir / (ne02 * ne01);
+    //             let i02 = (ir - i03 * ne02 * ne01) / ne01;
+    //             let i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
+
+    //             let i13 = i03 % ne13;
+    //             let i12 = i02 % ne12;
+    //             let i11 = i01 % ne11;
+
+    //             let dst_pos = i03 * nb3 + i02 * nb2 + i01 * nb1;
+    //             let src0_pos = i03 * nb03 + i02 * nb02 + i01 * nb01;
+    //             let src1_pos = i13 * nb13 + i12 * nb12 + i11 * nb11;
+
+    //             let dst_ptr = &mut dst[dst_pos..dst_pos + ne00];
+    //             let src0_ptr = &inp0[src0_pos..src0_pos + ne00];
+    //             let src1_ptr = &inp1[src1_pos..src1_pos + ne00];
+
+    //             simd_vec_add_f32(src0_ptr, src1_ptr, dst_ptr);
+    //         }
+    //     } else {
+    //         // for j in 0..n {
+    //         //     let dst_ptr = &mut dst[j * nb1..];
+    //         //     let src0_ptr = &inp1[j * nb01..];
+    //         //     for i in 0..nc {
+    //         //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
+    //         //     }
+    //         // }
+    //         println!("不连续");
+
+    //         dst.par_chunks_mut(nb1)
+    //             .enumerate()
+    //             .for_each(|(j, dst_ptr)| {
+    //                 let src0_ptr = &inp0[j * nb01..];
+    //                 for i in 0..nc {
+    //                     dst_ptr[i] = src0_ptr[i] + inp1[j * nb11 + i * nb10];
+    //                 }
+    //             });
+    //     }
+
+    //  Ok(())
+    // fn f_quant_f32<T: QuantType>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[f32],
+    //     inp2_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+}
+
+struct Mul;
+
+impl Map2 for Mul {
+    const OP: &'static str = "mul";
+
+    fn f<T: TensorType>(
         &self,
+        inp0: &[T],
+        inp0_d: &Dim,
         inp1: &[T],
         inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [Y],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
-
-    fn f_f32(
-        &self,
-        inp1: &[f32],
-        inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
-        dst: &mut [f32],
+        dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
         println!(
             "{:?},{:?},{:?}",
+            inp0_d.shape(),
             inp1_d.shape(),
-            inp2_d.shape(),
             dst_d.shape()
         );
         assert!(
             // is_same_shape(inp1_d.shape(), inp2_d.shape())
-            is_same_shape(inp1_d.shape(), dst_d.shape())
+            is_same_shape(inp0_d.shape(), dst_d.shape())
         );
         let time1 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_millis();
-        let n = inp1_d.nrows();
-        let nc = inp1_d.dim1();
+            .as_nanos();
+        let n = inp0_d.nrows();
+        let nc = inp0_d.dim1();
 
         // let nb00 = inp1_d.stride_1d();
 
@@ -503,12 +574,12 @@ impl Map2 for Mul {
 
         // let nb0 = dst_d.stride_1d();
 
-        let (ne00, ne01, ne02, ne03) = inp1_d.dim4();
-        let (ne10, ne11, ne12, ne13) = inp2_d.dim4();
+        let (ne00, ne01, ne02, ne03) = inp0_d.dim4();
+        let (ne10, ne11, ne12, ne13) = inp1_d.dim4();
 
-        let (nb00, nb01, nb02, nb03) = inp1_d.stride_4d();
+        let (nb00, nb01, nb02, nb03) = inp0_d.stride_4d();
 
-        let (nb10, nb11, nb12, nb13) = inp2_d.stride_4d();
+        let (nb10, nb11, nb12, nb13) = inp1_d.stride_4d();
 
         let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
         let nr = ne01 * ne02 * ne03;
@@ -519,22 +590,38 @@ impl Map2 for Mul {
         let nth: usize = 1;
         // simd_vec_mul_f32(inp1, inp2, dst);
         if nb10 == 1 {
-            for ir in 0..nr {
-                let i03 = ir / (ne02 * ne01);
-                let i02 = (ir - i03 * ne02 * ne01) / ne01;
-                let i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
+            dst.par_chunks_mut(ne00)
+                .enumerate()
+                .for_each(|(ir, dst_chunk)| {
+                    let i03 = ir / (ne02 * ne01);
+                    let i02 = (ir - i03 * ne02 * ne01) / ne01;
+                    let i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
 
-                let i13 = i03 % ne13;
-                let i12 = i02 % ne12;
-                let i11 = i01 % ne11;
+                    let i13 = i03 % ne13;
+                    let i12 = i02 % ne12;
+                    let i11 = i01 % ne11;
 
-                let dst_ptr = &mut dst[i03 * nb3 + i02 * nb2 + i01 * nb1..];
-                let src0_ptr = &inp1[i03 * nb03 + i02 * nb02 + i01 * nb01..];
-                let src1_ptr = &inp2[i13 * nb13 + i12 * nb12 + i11 * nb11..];
+                    let src0_pos = i03 * nb03 + i02 * nb02 + i01 * nb01;
+                    let src1_pos = i13 * nb13 + i12 * nb12 + i11 * nb11;
 
-                simd_vec_mul_f32(src0_ptr, src1_ptr, dst_ptr);
-            }
+                    let src0_ptr = &inp0[src0_pos..src0_pos + ne00];
+                    let src1_ptr = &inp1[src1_pos..src1_pos + ne00];
+                    // let i03 = ir / (ne02 * ne01);
+                    // let i02 = (ir - i03 * ne02 * ne01) / ne01;
+                    // let i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
+
+                    // let i13 = i03 % ne13;
+                    // let i12 = i02 % ne12;
+                    // let i11 = i01 % ne11;
+
+                    // // let dst_ptr = &mut dst[i03 * nb3 + i02 * nb2 + i01 * nb1..];
+                    // let src0_ptr = &inp0[i03 * nb03 + i02 * nb02 + i01 * nb01..];
+                    // let src1_ptr = &inp1[i13 * nb13 + i12 * nb12 + i11 * nb11..];
+
+                    T::vec_mul(src0_ptr, src1_ptr, dst_chunk);
+                });
         } else {
+            todo!()
             // for j in 0..n {
             //     let dst_ptr = &mut dst[j * nb1..];
             //     let src0_ptr = &inp1[j * nb01..];
@@ -555,22 +642,183 @@ impl Map2 for Mul {
         let time2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_millis();
-        println!("{} time:{} ms", Self::OP, time2 - time1);
+            .as_nanos();
+        println!("{} time:{} ns", Self::OP, time2 - time1);
         Ok(())
     }
 
-    fn f_quant_f32<T: QuantType>(
+    fn f_q_f32_f32<T: QuantType>(
         &self,
-        inp1: &[T],
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[f32],
         inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
     }
+
+    fn f_q_x_f32<T: QuantType + TensorType, X: TensorType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[X],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_x_y_x<X: TensorType, Y: TensorType>(
+        &self,
+        inp0: &[X],
+        inp0_d: &Dim,
+        inp1: &[Y],
+        inp1_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    // fn f_quant_num<T: QuantType, X>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    // fn f_x_y_x<X, Y>(
+    //     &self,
+    //     inp: &[X],
+    //     inp_d: &Dim,
+    //     k: &[Y],
+    //     k_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    // fn f_quant_num2<T: QuantType, X, Y>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [Y],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    // fn f_f32(
+    //     &self,
+    //     inp1: &[f32],
+    //     inp1_d: &Dim,
+    //     inp2: &[f32],
+    //     inp2_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     println!(
+    //         "{:?},{:?},{:?}",
+    //         inp1_d.shape(),
+    //         inp2_d.shape(),
+    //         dst_d.shape()
+    //     );
+    //     assert!(
+    //         // is_same_shape(inp1_d.shape(), inp2_d.shape())
+    //         is_same_shape(inp1_d.shape(), dst_d.shape())
+    //     );
+    //     let time1 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+    //     let n = inp1_d.nrows();
+    //     let nc = inp1_d.dim1();
+
+    //     // let nb00 = inp1_d.stride_1d();
+
+    //     // let nb10 = inp2_d.stride_1d();
+
+    //     // let nb0 = dst_d.stride_1d();
+
+    //     let (ne00, ne01, ne02, ne03) = inp1_d.dim4();
+    //     let (ne10, ne11, ne12, ne13) = inp2_d.dim4();
+
+    //     let (nb00, nb01, nb02, nb03) = inp1_d.stride_4d();
+
+    //     let (nb10, nb11, nb12, nb13) = inp2_d.stride_4d();
+
+    //     let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+    //     let nr = ne01 * ne02 * ne03;
+    //     assert!(nb00 == 1);
+    //     assert!(nb10 == 1);
+    //     assert!(nb0 == 1);
+    //     let ith: usize = 0;
+    //     let nth: usize = 1;
+    //     // simd_vec_mul_f32(inp1, inp2, dst);
+    //     if nb10 == 1 {
+    //         for ir in 0..nr {
+    //             let i03 = ir / (ne02 * ne01);
+    //             let i02 = (ir - i03 * ne02 * ne01) / ne01;
+    //             let i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
+
+    //             let i13 = i03 % ne13;
+    //             let i12 = i02 % ne12;
+    //             let i11 = i01 % ne11;
+
+    //             let dst_ptr = &mut dst[i03 * nb3 + i02 * nb2 + i01 * nb1..];
+    //             let src0_ptr = &inp1[i03 * nb03 + i02 * nb02 + i01 * nb01..];
+    //             let src1_ptr = &inp2[i13 * nb13 + i12 * nb12 + i11 * nb11..];
+
+    //             simd_vec_mul_f32(src0_ptr, src1_ptr, dst_ptr);
+    //         }
+    //     } else {
+    //         // for j in 0..n {
+    //         //     let dst_ptr = &mut dst[j * nb1..];
+    //         //     let src0_ptr = &inp1[j * nb01..];
+    //         //     for i in 0..nc {
+    //         //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
+    //         //     }
+    //         // }
+
+    //         // dst.par_chunks_mut(nb1)
+    //         //     .enumerate()
+    //         //     .for_each(|(j, dst_ptr)| {
+    //         //         let src0_ptr = &inp1[j * nb01..];
+    //         //         for i in 0..nc {
+    //         //             dst_ptr[i] = src0_ptr[i] * inp2[j * nb11 + i * nb10];
+    //         //         }
+    //         //     });
+    //     }
+    //     let time2 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+    //     println!("{} time:{} ms", Self::OP, time2 - time1);
+    //     Ok(())
+    // }
+
+    // fn f_quant_f32<T: QuantType>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[f32],
+    //     inp2_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 }
 
 struct Gelu;
@@ -578,18 +826,25 @@ struct Gelu;
 impl Map for Gelu {
     const OP: &'static str = "gelu";
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
-        todo!()
-    }
-
-    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
         assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
         dst.par_iter_mut().zip(inp.par_iter()).for_each(|(d, a)| {
-            *d = GLOBAL_CPU_DEVICE_CACHE
-                .get_gelu_cache(f16::from_f32(*a).to_bits() as usize)
-                .to_f32()
+            *d = T::from_x(
+                GLOBAL_CPU_DEVICE_CACHE
+                    .get_gelu_cache(f16::from_f32(a.to_f32()).to_bits() as usize),
+            )
         });
         Ok(())
     }
+
+    // fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+    //     assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
+    //     dst.par_iter_mut().zip(inp.par_iter()).for_each(|(d, a)| {
+    //         *d = GLOBAL_CPU_DEVICE_CACHE
+    //             .get_gelu_cache(f16::from_f32(*a).to_bits() as usize)
+    //             .to_f32()
+    //     });
+    //     Ok(())
+    // }
 
     fn f_x_y<X: TensorType, Y: TensorType>(
         &self,
@@ -611,17 +866,53 @@ struct Conv1D1S;
 impl Map2 for Conv1D1S {
     const OP: &'static str = "conv1d1s";
 
-    fn f_quant_num<T: QuantType, X>(
+    fn f<T: TensorType>(
         &self,
+        inp0: &[T],
+        inp0_d: &Dim,
         inp1: &[T],
         inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [X],
+        dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
     }
+
+    fn f_q_f32_f32<T: QuantType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[f32],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_q_x_f32<T: QuantType + TensorType, X: TensorType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[X],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    // fn f_quant_num<T: QuantType, X>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     fn f_x_y_x<X, Y>(
         &self,
@@ -635,17 +926,17 @@ impl Map2 for Conv1D1S {
         todo!()
     }
 
-    fn f_quant_num2<T: QuantType, X, Y>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [Y],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_quant_num2<T: QuantType, X, Y>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [Y],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     // fn f_f16_f32(
     //     &self,
@@ -777,59 +1068,105 @@ impl Map2 for Conv1D1S {
     //     Ok(())
     // }
 
-    fn f_quant_f32<T: QuantType>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_quant_f32<T: QuantType>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[f32],
+    //     inp2_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 }
 
 struct Conv1D2S;
 
 impl Map2 for Conv1D2S {
     const OP: &'static str = "conv1d2s";
-
-    fn f_quant_num<T: QuantType, X>(
+    fn f<T: TensorType>(
         &self,
+        inp0: &[T],
+        inp0_d: &Dim,
         inp1: &[T],
         inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
+        dst: &mut [T],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_q_f32_f32<T: QuantType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[f32],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_q_x_f32<T: QuantType + TensorType, X: TensorType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[X],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    fn f_x_y_x<X: TensorType, Y: TensorType>(
+        &self,
+        inp0: &[X],
+        inp0_d: &Dim,
+        inp1: &[Y],
+        inp1_d: &Dim,
         dst: &mut [X],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
     }
+    // fn f_quant_num<T: QuantType, X>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
-    fn f_x_y_x<X, Y>(
-        &self,
-        inp: &[X],
-        inp_d: &Dim,
-        k: &[Y],
-        k_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_x_y_x<X, Y>(
+    //     &self,
+    //     inp: &[X],
+    //     inp_d: &Dim,
+    //     k: &[Y],
+    //     k_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
-    fn f_quant_num2<T: QuantType, X, Y>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [Y],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_quant_num2<T: QuantType, X, Y>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [Y],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     // fn f_f16_f32(
     //     &self,
@@ -974,17 +1311,17 @@ impl Map2 for Conv1D2S {
     //     Ok(())
     // }
 
-    fn f_quant_f32<T: QuantType>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_quant_f32<T: QuantType>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[f32],
+    //     inp2_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 }
 
 struct Repeat;
@@ -1039,102 +1376,100 @@ impl Map for Repeat {
         Ok(())
     }
 
-    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
-        self.f(inp, inp_d, dst, dst_d)
-    }
+    // fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+    //     self.f(inp, inp_d, dst, dst_d)
+    // }
 
     // fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
     //     Ok(())
     // }
 }
 
-struct Norm;
-use std::time::{SystemTime, UNIX_EPOCH};
-impl Map for Norm {
-    const OP: &'static str = "norm";
-    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
-        Ok(())
-    }
+// struct Norm;
+// use std::time::{SystemTime, UNIX_EPOCH};
+// impl Map for Norm {
+//     const OP: &'static str = "norm";
+//     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
+//         let time1 = SystemTime::now()
+//             .duration_since(UNIX_EPOCH)
+//             .unwrap()
+//             .as_millis();
+//         assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
+//         let (ne00, ne01, ne02, ne03) = inp_d.dim4();
+//         let (_, nb01, nb02, nb03) = inp_d.stride_4d();
+//         let (_, nb1, nb2, nb3) = dst_d.stride_4d();
 
-    fn f_x_y<X: TensorType, Y: TensorType>(
-        &self,
-        inp: &[X],
-        inp_d: &Dim,
-        dst: &mut [Y],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+//         let eps: f64 = 1e-5;
+//         for i03 in 0..ne03 {
+//             for i02 in 0..ne02 {
+//                 for i01 in 0..ne01 {
+//                     let x = &inp[i01 * nb01 + i02 * nb02 + i03 * nb03..];
 
-    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
-        let time1 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
-        let (ne00, ne01, ne02, ne03) = inp_d.dim4();
-        let (_, nb01, nb02, nb03) = inp_d.stride_4d();
-        let (_, nb1, nb2, nb3) = dst_d.stride_4d();
+//                     let mut mean: f64 = x[..ne00]
+//                         .chunks_exact(32)
+//                         .map(|chunk| {
+//                             let v = f32x32::from_slice(chunk);
+//                             v.reduce_sum() as f64
+//                         })
+//                         .sum();
+//                     // for i00 in 0..ne00 {
+//                     //     mean += x[i00] as f64;
+//                     // }
+//                     mean /= ne00 as f64;
+//                     let y = &mut dst[i01 * nb1 + i02 * nb2 + i03 * nb3..];
+//                     let v_mean = std::simd::f32x32::splat(mean as f32);
+//                     // let mut sum2 = 0.0f64;
+//                     let sum2: f64 = y[..ne00]
+//                         .chunks_exact_mut(32)
+//                         .zip(x[..ne00].chunks_exact(32))
+//                         .map(|(d, a)| {
+//                             let va = std::simd::f32x32::from_slice(a);
+//                             let va = va - v_mean;
+//                             va.copy_to_slice(d);
+//                             (va * va).reduce_sum() as f64
+//                         })
+//                         .sum();
 
-        let eps: f64 = 1e-5;
-        for i03 in 0..ne03 {
-            for i02 in 0..ne02 {
-                for i01 in 0..ne01 {
-                    let x = &inp[i01 * nb01 + i02 * nb02 + i03 * nb03..];
+//                     // for i00 in 0..ne00 {
+//                     //     let v = x[i00] as f64 - mean;
+//                     //     y[i00] = v as f32;
+//                     //     sum2 += v * v;
+//                     // }
+//                     let scale =
+//                         std::simd::f32x32::splat((1.0 / (sum2 / ne00 as f64 + eps).sqrt()) as f32);
+//                     y[..ne00].chunks_exact_mut(32).for_each(|d| {
+//                         let va = std::simd::f32x32::from_slice(d);
+//                         let va = va * scale;
+//                         va.copy_to_slice(d);
+//                     });
+//                     // vec_scale_f32(ne00, y, scale);
+//                 }
+//             }
+//         }
+//         let time2 = SystemTime::now()
+//             .duration_since(UNIX_EPOCH)
+//             .unwrap()
+//             .as_millis();
+//         println!("{} time:{} ms", Self::OP, time2 - time1);
+//         Ok(())
+//     }
 
-                    let mut mean: f64 = x[..ne00]
-                        .chunks_exact(32)
-                        .map(|chunk| {
-                            let v = f32x32::from_slice(chunk);
-                            v.reduce_sum() as f64
-                        })
-                        .sum();
-                    // for i00 in 0..ne00 {
-                    //     mean += x[i00] as f64;
-                    // }
-                    mean /= ne00 as f64;
-                    let y = &mut dst[i01 * nb1 + i02 * nb2 + i03 * nb3..];
-                    let v_mean = std::simd::f32x32::splat(mean as f32);
-                    // let mut sum2 = 0.0f64;
-                    let sum2: f64 = y[..ne00]
-                        .chunks_exact_mut(32)
-                        .zip(x[..ne00].chunks_exact(32))
-                        .map(|(d, a)| {
-                            let va = std::simd::f32x32::from_slice(a);
-                            let va = va - v_mean;
-                            va.copy_to_slice(d);
-                            (va * va).reduce_sum() as f64
-                        })
-                        .sum();
+//     fn f_x_y<X: TensorType, Y: TensorType>(
+//         &self,
+//         inp: &[X],
+//         inp_d: &Dim,
+//         dst: &mut [Y],
+//         dst_d: &Dim,
+//     ) -> GResult<()> {
+//         todo!()
+//     }
 
-                    // for i00 in 0..ne00 {
-                    //     let v = x[i00] as f64 - mean;
-                    //     y[i00] = v as f32;
-                    //     sum2 += v * v;
-                    // }
-                    let scale =
-                        std::simd::f32x32::splat((1.0 / (sum2 / ne00 as f64 + eps).sqrt()) as f32);
-                    y[..ne00].chunks_exact_mut(32).for_each(|d| {
-                        let va = std::simd::f32x32::from_slice(d);
-                        let va = va * scale;
-                        va.copy_to_slice(d);
-                    });
-                    // vec_scale_f32(ne00, y, scale);
-                }
-            }
-        }
-        let time2 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        println!("{} time:{} ms", Self::OP, time2 - time1);
-        Ok(())
-    }
+//     // fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {}
 
-    // fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
-    //     Ok(())
-    // }
-}
+//     // fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()> {
+//     //     Ok(())
+//     // }
+// }
 
 struct RmsNorm {
     eps: f32,
@@ -1142,8 +1477,12 @@ struct RmsNorm {
 
 impl Map for RmsNorm {
     const OP: &'static str = "rms_norm";
-    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
-        assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
+    // fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+    //     assert!(is_same_shape(inp_d.shape(), dst_d.shape()));
+
+    // }
+
+    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
         let (ne00, ne01, ne02, ne03) = inp_d.dim4();
         let (_, nb01, nb02, nb03) = inp_d.stride_4d();
         let (_, nb1, nb2, nb3) = dst_d.stride_4d();
@@ -1152,28 +1491,22 @@ impl Map for RmsNorm {
             for i02 in 0..ne02 {
                 for i01 in 0..ne01 {
                     let x = &inp[i01 * nb01 + i02 * nb02 + i03 * nb03..];
-                    let n32 = ne00 & !(STEP - 1);
-                    let mut mean: f32 = x[..n32]
-                        .chunks_exact(STEP)
-                        .map(|chunk| {
-                            let mut v = f32x32::from_slice(chunk);
-                            v *= v;
-                            v.reduce_sum()
-                        })
-                        .sum();
-                    mean /= ne00 as f32;
                     let y = &mut dst[i01 * nb1 + i02 * nb2 + i03 * nb3..];
-                    y[..ne00].copy_from_slice(&x[..ne00]);
-                    let scale = 1.0 / (mean + eps).sqrt();
-                    vec_scale_f32(ne00, y, scale);
+                    T::rms_norm(ne00, x, y, eps);
+
+                    // let n32 = ne00 & !(STEP - 1);
+                    // let mut mean = x[..n32]
+                    //     .chunks_exact(STEP)
+                    //     .map(|chunk| T::reduce_sum(chunk).to_f32())
+                    //     .sum::<f32>();
+                    // mean /= ne00 as f32;
+                    // y[..ne00].copy_from_slice(&x[..ne00]);
+                    // let scale = 1.0 / (mean + eps).sqrt();
+                    // f32::vec_scale(ne00, y, scale);
                 }
             }
         }
         Ok(())
-    }
-
-    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
-        todo!()
     }
 
     fn f_x_y<X: TensorType, Y: TensorType>(
@@ -1191,22 +1524,60 @@ impl Map for RmsNorm {
     // }
 }
 
+struct MatMulTask {
+    ir0: (usize, usize),
+    ir1: (usize, usize),
+}
+
+impl MatMulTask {
+    fn ir110(&self) -> usize {
+        self.ir1.0
+    }
+
+    fn ir111(&self) -> usize {
+        self.ir1.1
+    }
+
+    fn ir010(&self) -> usize {
+        self.ir0.0
+    }
+
+    fn ir011(&self) -> usize {
+        self.ir0.1
+    }
+}
+
+unsafe impl<'a> Send for UnsafeF32Slice<'a> {}
+unsafe impl<'a> Sync for UnsafeF32Slice<'a> {}
+
+struct UnsafeF32Slice<'a>(UnsafeCell<&'a mut [f32]>);
+
+impl<'a> UnsafeF32Slice<'a> {
+    fn new(f: &'a mut [f32]) -> UnsafeF32Slice {
+        Self(UnsafeCell::new(f))
+    }
+
+    pub(crate) unsafe fn borrow_mut(&self) -> &'a mut [f32] {
+        *self.0.get()
+    }
+}
+
 struct MatMul;
 
 impl Map2 for MatMul {
     const OP: &'static str = "matmul";
 
-    fn f_quant_num<T: QuantType, X>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_quant_num<T: QuantType, X>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     fn f_x_y_x<X, Y>(
         &self,
@@ -1220,64 +1591,12 @@ impl Map2 for MatMul {
         todo!()
     }
 
-    fn f_quant_num2<T: QuantType, X, Y>(
+    fn f_q_f32_f32<T: QuantType>(
         &self,
-        inp1: &[T],
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[f32],
         inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [Y],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
-
-    fn f<T: TensorType>(
-        &self,
-        lhs: &[T],
-        lhs_l: &Dim,
-        rhs: &[T],
-        rhs_l: &Dim,
-        dst: &mut [T],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        // let l_dim = lhs_l.shape();
-        // let r_dim: &[usize] = rhs_l.shape();
-        // let dim = l_dim.len();
-        // if dim < 2 || r_dim.len() != dim {
-        //     return Err(GError::ShapeMismatchBinaryOp {
-        //         lhs: lhs_l.shape.clone(),
-        //         rhs: rhs_l.shape.clone(),
-        //         op: "matmul",
-        //     });
-        // }
-        // let m = l_dim[dim - 2];
-        // let k = l_dim[dim - 1];
-        // let k2 = r_dim[dim - 2];
-        // let n = r_dim[dim - 1];
-        // // let mut c_dim = l_dim[..dim - 2].to_vec();
-        // // c_dim.extend(&[m, n]);
-        // // let c_n_dims = c_dim.len();
-        // // let c_shape = Shape::from_vec(c_dim);
-        // let batching: usize = l_dim[..dim - 2].iter().product();
-        // let batching_b: usize = r_dim[..dim - 2].iter().product();
-        // if k != k2 || batching != batching_b {
-        //     return Err(GError::ShapeMismatchBinaryOp {
-        //         lhs: lhs_l.shape.clone(),
-        //         rhs: rhs_l.shape.clone(),
-        //         op: "matmul",
-        //     });
-        // }
-        // self.compute_mul_mat_use_gemm(lhs, lhs_l, &rhs, rhs_l, dst, (batching, m, n, k))?;
-        Ok(())
-    }
-
-    fn f_quant_f32<T: QuantType>(
-        &self,
-        lhs: &[T],
-        lhs_l: &Dim,
-        rhs: &[f32],
-        rhs_l: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
@@ -1287,14 +1606,14 @@ impl Map2 for MatMul {
             .as_millis();
 
         let block_size = T::VecDotType::BLCK_SIZE;
-        let mut quant_list = vec![T::VecDotType::zero(); rhs.len() / block_size];
-        let (ne00, ne01, ne02, ne03) = lhs_l.dim4();
-        let (ne10, ne11, ne12, ne13) = rhs_l.dim4();
+        let mut quant_list = vec![T::VecDotType::zero(); inp1.len() / block_size];
+        let (ne00, ne01, ne02, ne03) = inp0_d.dim4();
+        let (ne10, ne11, ne12, ne13) = inp1_d.dim4();
 
         let (ne0, ne1, ne2, ne3) = dst_d.dim4();
 
-        let (nb00, nb01, nb02, nb03) = lhs_l.stride_4d();
-        let (nb10, nb11, nb12, nb13) = rhs_l.stride_4d();
+        let (nb00, nb01, nb02, nb03) = inp0_d.stride_4d();
+        let (nb10, nb11, nb12, nb13) = inp1_d.stride_4d();
         let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
         let mut idx = 0;
         let row_size = ne10 / block_size;
@@ -1302,7 +1621,7 @@ impl Map2 for MatMul {
             for i12 in 0..ne12 {
                 for i11 in 0..ne11 {
                     T::VecDotType::from_f32(
-                        &rhs[i13 * nb13 + i12 * nb12 + i11 * nb11
+                        &inp1[i13 * nb13 + i12 * nb12 + i11 * nb11
                             ..i13 * nb13 + i12 * nb12 + i11 * nb11 + ne10],
                         &mut quant_list[idx..idx + row_size],
                     )?;
@@ -1326,32 +1645,34 @@ impl Map2 for MatMul {
         assert!(nb1 <= nb2);
         assert!(nb2 <= nb3);
 
-        let ith = 0;
-        let nth = 1;
+        // let ith = 0;
+        let nth = 4;
 
-        let row_size = ne10 / block_size;
+        // let matmul_tasks: Vec<MatMulTask> =
+        //     .collect();
 
-        let nr0 = ne01; // src0 rows
-        let nr1 = ne11 * ne12 * ne13; // src1 rows
+        // let nr0 = ne01; // src0 rows
+        // let nr1 = ne11 * ne12 * ne13; // src1 rows
+        // let row_size = ne10 / block_size;
 
-        //printf("nr0 = %lld, nr1 = %lld\n", nr0, nr1);
+        // //printf("nr0 = %lld, nr1 = %lld\n", nr0, nr1);
 
-        // distribute the thread work across the inner or outer loop based on which one is larger
+        // // distribute the thread work across the inner or outer loop based on which one is larger
 
-        let nth0 = 1; //nr0 > nr1 ? nth : 1; // parallelize by src0 rows
-        let nth1 = 1; //nr0 > nr1 ? 1 : nth; // parallelize by src1 rows
+        // let nth0 = if nr0 > nr1 { nth } else { 1 }; // parallelize by src0 rows
+        // let nth1 = if nr0 > nr1 { 1 } else { nth }; // parallelize by src1 rows
 
-        let ith0 = 0; //ith % nth0;
-        let ith1 = 0; //ith / nth0;
+        // let ith0 = ith % nth0;
+        // let ith1 = ith / nth0;
 
-        let dr0 = (nr0 + nth0 - 1) / nth0;
-        let dr1 = (nr1 + nth1 - 1) / nth1;
+        // let dr0 = (nr0 + nth0 - 1) / nth0;
+        // let dr1 = (nr1 + nth1 - 1) / nth1;
 
-        let ir010 = dr0 * ith0;
-        let ir011 = std::cmp::min(ir010 + dr0, nr0);
+        // let ir010 = dr0 * ith0;
+        // let ir011 = min(ir010 + dr0, nr0);
 
-        let ir110 = dr1 * ith1;
-        let ir111 = std::cmp::min(ir110 + dr1, nr1);
+        // let ir110 = dr1 * ith1;
+        // let ir111 = min(ir110 + dr1, nr1);
 
         //printf("ir010 = %6lld, ir011 = %6lld, ir110 = %6lld, ir111 = %6lld\n", ir010, ir011, ir110, ir111);
 
@@ -1372,37 +1693,70 @@ impl Map2 for MatMul {
         let r2 = ne12 / ne02;
         let r3 = ne13 / ne03;
 
-        for iir1 in (ir110..ir111).step_by(blck_1 as usize) {
-            for iir0 in (ir010..ir011).step_by(blck_0 as usize) {
-                let ir1_range = iir1..(iir1 + blck_1).min(ir111);
-                for ir1 in ir1_range {
-                    let i13 = ir1 / (ne12 * ne11);
-                    let i12 = (ir1 - i13 * ne12 * ne11) / ne11;
-                    let i11 = ir1 - i13 * ne12 * ne11 - i12 * ne11;
+        let unsafe_dst = UnsafeF32Slice::new(dst);
 
-                    // Broadcast src0 into src1
-                    let i03 = i13 / r3;
-                    let i02 = i12 / r2;
+        (0..nth)
+            .into_par_iter()
+            .map(|ith| {
+                let nr0 = ne01; // src0 rows
+                let nr1 = ne11 * ne12 * ne13; // src1 rows
+                let row_size = ne10 / block_size;
+                let nth0 = if nr0 > nr1 { nth } else { 1 }; // parallelize by src0 rows
+                let nth1 = if nr0 > nr1 { 1 } else { nth }; // parallelize by src1 rows
 
-                    let i1 = i11;
-                    let i2 = i12;
-                    let i3 = i13;
+                let ith0 = ith % nth0;
+                let ith1 = ith / nth0;
 
-                    let src0_row = &lhs[(0 + i02 * nb02 + i03 * nb03)..];
-                    // Calculate the offset for src1
-                    let src1_col = &quant_list[(i11 + i12 * ne11 + i13 * ne12 * ne11) * row_size..];
+                let dr0 = (nr0 + nth0 - 1) / nth0;
+                let dr1 = (nr1 + nth1 - 1) / nth1;
 
-                    let dst_col = &mut dst[(i1 * nb1 + i2 * nb2 + i3 * nb3)..];
-                    assert!(ne00 % 32 == 0);
-                    for ir0 in (iir0..(iir0 + blck_0).min(ir011)).map(|x| x as usize) {
-                        dst_col[ir0] = T::vec_dot(
-                            &src0_row[ir0 * nb01..(ir0 * nb01 + ne00 / block_size)],
-                            &src1_col[..ne00 / block_size],
-                        );
+                let ir010 = dr0 * ith0;
+                let ir011 = min(ir010 + dr0, nr0);
+
+                let ir110 = dr1 * ith1;
+                let ir111 = min(ir110 + dr1, nr1);
+                MatMulTask {
+                    ir0: (ir010, ir011),
+                    ir1: (ir110, ir111),
+                }
+            })
+            .for_each(|task| {
+                for iir1 in (task.ir110()..task.ir111()).step_by(blck_1 as usize) {
+                    for iir0 in (task.ir010()..task.ir011()).step_by(blck_0 as usize) {
+                        let ir1_range = iir1..(iir1 + blck_1).min(task.ir111());
+                        for ir1 in ir1_range {
+                            let i13 = ir1 / (ne12 * ne11);
+                            let i12 = (ir1 - i13 * ne12 * ne11) / ne11;
+                            let i11 = ir1 - i13 * ne12 * ne11 - i12 * ne11;
+
+                            // Broadcast src0 into src1
+                            let i03 = i13 / r3;
+                            let i02 = i12 / r2;
+
+                            let i1 = i11;
+                            let i2 = i12;
+                            let i3 = i13;
+
+                            let src0_row = &inp0[(i02 * nb02 + i03 * nb03)..];
+                            // Calculate the offset for src1
+                            let src1_col =
+                                &quant_list[(i11 + i12 * ne11 + i13 * ne12 * ne11) * row_size..];
+                            let d = unsafe {
+                                &mut unsafe_dst.borrow_mut()[(i1 * nb1 + i2 * nb2 + i3 * nb3)
+                                    ..(i1 * nb1 + i2 * nb2 + i3 * nb3) + iir0 + blck_0]
+                            };
+                            assert!(ne00 % 32 == 0);
+                            for ir0 in (iir0..(iir0 + blck_0).min(task.ir011())).map(|x| x as usize)
+                            {
+                                d[ir0] = T::vec_dot(
+                                    &src0_row[ir0 * nb01..(ir0 * nb01 + ne00 / block_size)],
+                                    &src1_col[..ne00 / block_size],
+                                );
+                            }
+                        }
                     }
                 }
-            }
-        }
+            });
 
         // let ith = 0;
         // let nth = 1;
@@ -1453,6 +1807,252 @@ impl Map2 for MatMul {
         println!("quant {} time:{} ms", Self::OP, time2 - time1);
         return Ok(());
     }
+
+    fn f_q_x_f32<T: QuantType + TensorType, X: TensorType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[X],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    // fn f_quant_num2<T: QuantType, X, Y>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [Y],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    fn f<T: TensorType>(
+        &self,
+        lhs: &[T],
+        lhs_l: &Dim,
+        rhs: &[T],
+        rhs_l: &Dim,
+        dst: &mut [T],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        // let l_dim = lhs_l.shape();
+        // let r_dim: &[usize] = rhs_l.shape();
+        // let dim = l_dim.len();
+        // if dim < 2 || r_dim.len() != dim {
+        //     return Err(GError::ShapeMismatchBinaryOp {
+        //         lhs: lhs_l.shape.clone(),
+        //         rhs: rhs_l.shape.clone(),
+        //         op: "matmul",
+        //     });
+        // }
+        // let m = l_dim[dim - 2];
+        // let k = l_dim[dim - 1];
+        // let k2 = r_dim[dim - 2];
+        // let n = r_dim[dim - 1];
+        // // let mut c_dim = l_dim[..dim - 2].to_vec();
+        // // c_dim.extend(&[m, n]);
+        // // let c_n_dims = c_dim.len();
+        // // let c_shape = Shape::from_vec(c_dim);
+        // let batching: usize = l_dim[..dim - 2].iter().product();
+        // let batching_b: usize = r_dim[..dim - 2].iter().product();
+        // if k != k2 || batching != batching_b {
+        //     return Err(GError::ShapeMismatchBinaryOp {
+        //         lhs: lhs_l.shape.clone(),
+        //         rhs: rhs_l.shape.clone(),
+        //         op: "matmul",
+        //     });
+        // }
+        // self.compute_mul_mat_use_gemm(lhs, lhs_l, &rhs, rhs_l, dst, (batching, m, n, k))?;
+        todo!()
+    }
+
+    // fn f_quant_f32<T: QuantType>(
+    //     &self,
+    //     lhs: &[T],
+    //     lhs_l: &Dim,
+    //     rhs: &[f32],
+    //     rhs_l: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     let time1 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+
+    //     let block_size = T::VecDotType::BLCK_SIZE;
+    //     let mut quant_list = vec![T::VecDotType::zero(); rhs.len() / block_size];
+    //     let (ne00, ne01, ne02, ne03) = lhs_l.dim4();
+    //     let (ne10, ne11, ne12, ne13) = rhs_l.dim4();
+
+    //     let (ne0, ne1, ne2, ne3) = dst_d.dim4();
+
+    //     let (nb00, nb01, nb02, nb03) = lhs_l.stride_4d();
+    //     let (nb10, nb11, nb12, nb13) = rhs_l.stride_4d();
+    //     let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+    //     let mut idx = 0;
+    //     let row_size = ne10 / block_size;
+    //     for i13 in 0..ne13 {
+    //         for i12 in 0..ne12 {
+    //             for i11 in 0..ne11 {
+    //                 T::VecDotType::from_f32(
+    //                     &rhs[i13 * nb13 + i12 * nb12 + i11 * nb11
+    //                         ..i13 * nb13 + i12 * nb12 + i11 * nb11 + ne10],
+    //                     &mut quant_list[idx..idx + row_size],
+    //                 )?;
+    //                 idx += row_size;
+    //             }
+    //         }
+    //     }
+
+    //     assert!(ne0 == ne01);
+    //     assert!(ne1 == ne11);
+    //     assert!(ne2 == ne12);
+    //     assert!(ne3 == ne13);
+
+    //     // we don't support permuted src0 or src1
+    //     assert!(nb00 == 1);
+    //     assert!(nb10 == 1);
+
+    //     // dst cannot be transposed or permuted
+    //     assert!(nb0 == 1);
+    //     assert!(nb0 <= nb1);
+    //     assert!(nb1 <= nb2);
+    //     assert!(nb2 <= nb3);
+
+    //     let ith = 0;
+    //     let nth = 1;
+
+    //     let row_size = ne10 / block_size;
+
+    //     let nr0 = ne01; // src0 rows
+    //     let nr1 = ne11 * ne12 * ne13; // src1 rows
+
+    //     //printf("nr0 = %lld, nr1 = %lld\n", nr0, nr1);
+
+    //     // distribute the thread work across the inner or outer loop based on which one is larger
+
+    //     let nth0 = 1; //nr0 > nr1 ? nth : 1; // parallelize by src0 rows
+    //     let nth1 = 1; //nr0 > nr1 ? 1 : nth; // parallelize by src1 rows
+
+    //     let ith0 = 0; //ith % nth0;
+    //     let ith1 = 0; //ith / nth0;
+
+    //     let dr0 = (nr0 + nth0 - 1) / nth0;
+    //     let dr1 = (nr1 + nth1 - 1) / nth1;
+
+    //     let ir010 = dr0 * ith0;
+    //     let ir011 = std::cmp::min(ir010 + dr0, nr0);
+
+    //     let ir110 = dr1 * ith1;
+    //     let ir111 = std::cmp::min(ir110 + dr1, nr1);
+
+    //     //printf("ir010 = %6lld, ir011 = %6lld, ir110 = %6lld, ir111 = %6lld\n", ir010, ir011, ir110, ir111);
+
+    //     // threads with no work simply yield (not sure if it helps)
+    //     // if (ir010 >= ir011 || ir110 >= ir111) {
+    //     //     return Ok(());
+    //     // }
+
+    //     assert!(ne12 % ne02 == 0);
+    //     assert!(ne13 % ne03 == 0);
+
+    //     // block-tiling attempt
+    //     let blck_0 = 16;
+    //     let blck_1 = 16;
+
+    //     // attempt to reduce false-sharing (does not seem to make a difference)
+    //     //  float tmp[16];
+    //     let r2 = ne12 / ne02;
+    //     let r3 = ne13 / ne03;
+
+    //     for iir1 in (ir110..ir111).step_by(blck_1 as usize) {
+    //         for iir0 in (ir010..ir011).step_by(blck_0 as usize) {
+    //             let ir1_range = iir1..(iir1 + blck_1).min(ir111);
+    //             for ir1 in ir1_range {
+    //                 let i13 = ir1 / (ne12 * ne11);
+    //                 let i12 = (ir1 - i13 * ne12 * ne11) / ne11;
+    //                 let i11 = ir1 - i13 * ne12 * ne11 - i12 * ne11;
+
+    //                 // Broadcast src0 into src1
+    //                 let i03 = i13 / r3;
+    //                 let i02 = i12 / r2;
+
+    //                 let i1 = i11;
+    //                 let i2 = i12;
+    //                 let i3 = i13;
+
+    //                 let src0_row = &lhs[(0 + i02 * nb02 + i03 * nb03)..];
+    //                 // Calculate the offset for src1
+    //                 let src1_col = &quant_list[(i11 + i12 * ne11 + i13 * ne12 * ne11) * row_size..];
+
+    //                 let dst_col = &mut dst[(i1 * nb1 + i2 * nb2 + i3 * nb3)..];
+    //                 assert!(ne00 % 32 == 0);
+    //                 for ir0 in (iir0..(iir0 + blck_0).min(ir011)).map(|x| x as usize) {
+    //                     dst_col[ir0] = T::vec_dot(
+    //                         &src0_row[ir0 * nb01..(ir0 * nb01 + ne00 / block_size)],
+    //                         &src1_col[..ne00 / block_size],
+    //                     );
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    // let ith = 0;
+    // let nth = 1;
+
+    // let nr = ne01 * ne02 * ne03;
+
+    // // rows per thread
+    // let dr = (nr + nth - 1) / nth;
+
+    // // row range for this thread
+    // let ir0 = dr * ith;
+    // let ir1 = std::cmp::min(ir0 + dr, nr);
+
+    // //   ggml_fp16_t * wdata = params->wdata;
+    // if nb01 >= nb00 {
+    //     for ir in ir0..ir1 {
+    //         // src0 indices
+    //         let i03 = ir / (ne02 * ne01);
+    //         let i02 = (ir - i03 * ne02 * ne01) / ne01;
+    //         let i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
+
+    //         let i13 = i03;
+    //         let i12 = i02;
+
+    //         let i0 = i01;
+    //         let i2 = i02;
+    //         let i3 = i03;
+
+    //         let src0_row = &lhs[i01 * nb01 + i02 * nb02 + i03 * nb03..];
+    //         let src1_col =
+    //             &quant_list[(0 + i12 * ne11 + i13 * ne12 * ne11) * ne00 / block_size..];
+
+    //         let dst_col = &mut dst[i0 * nb0 + 0 * nb1 + i2 * nb2 + i3 * nb3..];
+    //         assert!(ne00 % 32 == 0);
+    //         for ic in 0..ne11 {
+    //             dst_col[ic * ne0] =
+    //                 T::vec_dot(src0_row, &src1_col[ic * ne00 / block_size..], ne00)
+    //         }
+    //     }
+    // } else {
+    //     todo!()
+    // }
+
+    //     let time2 = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis();
+    //     println!("quant {} time:{} ms", Self::OP, time2 - time1);
+    //     return Ok(());
+    // }
 
     // fn f_f16_f32(
     //     &self,
@@ -1588,9 +2188,9 @@ impl Map for Cpy {
         Ok(())
     }
 
-    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
-        self.f(inp, inp_d, dst, dst_d)
-    }
+    // fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+    //     self.f(inp, inp_d, dst, dst_d)
+    // }
 
     fn f_x_y<X: TensorType, Y: TensorType>(
         &self,
@@ -1729,265 +2329,300 @@ impl Map for Cpy {
     // }
 }
 
-struct FlashAttn;
+// struct FlashAttn;
 
-impl Map4 for FlashAttn {
-    const OP: &'static str = "flashattn";
-    fn f_f16_f16_f16_f32(
-        &self,
-        q: &[f16],
-        q_d: &Dim,
-        k: &[f16],
-        k_d: &Dim,
-        v: &[f16],
-        v_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        let (neq0, neq1, neq2, neq3) = q_d.dim4();
-        let (nek0, nek1) = k_d.dim2();
-        // const int neq0 = q->ne[0];
-        // const int neq1 = q->ne[1];
-        // const int neq2 = q->ne[2];
-        // const int neq3 = q->ne[3];
+// impl Map4 for FlashAttn {
+//     const OP: &'static str = "flashattn";
+//     fn f_f16_f16_f16_f32(
+//         &self,
+//         q: &[f16],
+//         q_d: &Dim,
+//         k: &[f16],
+//         k_d: &Dim,
+//         v: &[f16],
+//         v_d: &Dim,
+//         dst: &mut [f32],
+//         dst_d: &Dim,
+//     ) -> GResult<()> {
+//         let (neq0, neq1, neq2, neq3) = q_d.dim4();
+//         let (nek0, nek1) = k_d.dim2();
+//         // const int neq0 = q->ne[0];
+//         // const int neq1 = q->ne[1];
+//         // const int neq2 = q->ne[2];
+//         // const int neq3 = q->ne[3];
 
-        // const int nek2 = k->ne[2];
-        // const int nek3 = k->ne[3];
+//         // const int nek2 = k->ne[2];
+//         // const int nek3 = k->ne[3];
 
-        // const int nev0 = v->ne[0];
-        //const int nev1 = v->ne[1];
+//         // const int nev0 = v->ne[0];
+//         //const int nev1 = v->ne[1];
 
-        let (_, nev1) = v_d.dim2();
-        // const int nev2 = v->ne[2];
-        // const int nev3 = v->ne[3];
+//         let (_, nev1) = v_d.dim2();
+//         // const int nev2 = v->ne[2];
+//         // const int nev3 = v->ne[3];
 
-        let (ne0, ne1) = dst_d.dim2();
+//         let (ne0, ne1) = dst_d.dim2();
 
-        // const int ne0 = dst->ne[0];
-        // const int ne1 = dst->ne[1];
-        // const int ne2  = dst->ne[2];
-        // const int ne3  = dst->ne[3];
+//         // const int ne0 = dst->ne[0];
+//         // const int ne1 = dst->ne[1];
+//         // const int ne2  = dst->ne[2];
+//         // const int ne3  = dst->ne[3];
 
-        let (nbk0, nbk1, nbk2, nbk3) = k_d.stride_4d();
-        let (nbq0, nbq1, nbq2, nbq3) = q_d.stride_4d();
-        let (nbv0, nbv1, nbv2, nbv3) = v_d.stride_4d();
-        let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+//         let (nbk0, nbk1, nbk2, nbk3) = k_d.stride_4d();
+//         let (nbq0, nbq1, nbq2, nbq3) = q_d.stride_4d();
+//         let (nbv0, nbv1, nbv2, nbv3) = v_d.stride_4d();
+//         let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
 
-        // const int nbk0 = k->nb[0];
-        // const int nbk1 = k->nb[1];
-        // const int nbk2 = k->nb[2];
-        // const int nbk3 = k->nb[3];
+//         // const int nbk0 = k->nb[0];
+//         // const int nbk1 = k->nb[1];
+//         // const int nbk2 = k->nb[2];
+//         // const int nbk3 = k->nb[3];
 
-        // const int nbq0 = q->nb[0];
-        // const int nbq1 = q->nb[1];
-        // const int nbq2 = q->nb[2];
-        // const int nbq3 = q->nb[3];
+//         // const int nbq0 = q->nb[0];
+//         // const int nbq1 = q->nb[1];
+//         // const int nbq2 = q->nb[2];
+//         // const int nbq3 = q->nb[3];
 
-        // const int nbv0 = v->nb[0];
-        // const int nbv1 = v->nb[1];
-        // const int nbv2 = v->nb[2];
-        // const int nbv3 = v->nb[3];
+//         // const int nbv0 = v->nb[0];
+//         // const int nbv1 = v->nb[1];
+//         // const int nbv2 = v->nb[2];
+//         // const int nbv3 = v->nb[3];
 
-        // const int nb0 = dst->nb[0];
-        // const int nb1 = dst->nb[1];
-        // const int nb2 = dst->nb[2];
-        // const int nb3 = dst->nb[3];
+//         // const int nb0 = dst->nb[0];
+//         // const int nb1 = dst->nb[1];
+//         // const int nb2 = dst->nb[2];
+//         // const int nb3 = dst->nb[3];
 
-        let ith = 0;
-        let nth = 1;
+//         let ith = 0;
+//         let nth = 1;
 
-        let D = neq0;
-        let N = neq1;
-        let P = nek1 - N;
-        let M = P + N;
+//         let D = neq0;
+//         let N = neq1;
+//         let P = nek1 - N;
+//         let M = P + N;
 
-        assert!(ne0 == D);
-        assert!(ne1 == N);
-        assert!(P >= 0);
+//         assert!(ne0 == D);
+//         assert!(ne1 == N);
+//         assert!(P >= 0);
 
-        assert!(nbq0 == 1);
-        assert!(nbk0 == 1);
-        assert!(nbv0 == 1);
+//         assert!(nbq0 == 1);
+//         assert!(nbk0 == 1);
+//         assert!(nbv0 == 1);
 
-        assert!(neq0 == D);
-        assert!(nek0 == D);
-        assert!(nev1 == D);
+//         assert!(neq0 == D);
+//         assert!(nek0 == D);
+//         assert!(nev1 == D);
 
-        assert!(neq1 == N);
-        assert!(nek1 == N + P);
-        assert!(nev1 == D);
+//         assert!(neq1 == N);
+//         assert!(nek1 == N + P);
+//         assert!(nev1 == D);
 
-        // dst cannot be transposed or permuted
-        assert!(nb0 == 1);
-        assert!(nb0 <= nb1);
-        assert!(nb1 <= nb2);
-        assert!(nb2 <= nb3);
+//         // dst cannot be transposed or permuted
+//         assert!(nb0 == 1);
+//         assert!(nb0 <= nb1);
+//         assert!(nb1 <= nb2);
+//         assert!(nb2 <= nb3);
 
-        let nr = neq1 * neq2 * neq3;
+//         let nr = neq1 * neq2 * neq3;
 
-        // rows per thread
-        let dr = (nr + nth - 1) / nth;
+//         // rows per thread
+//         let dr = (nr + nth - 1) / nth;
 
-        // row range for this thread
-        let ir0 = dr * ith;
-        let ir1 = std::cmp::min(ir0 + dr, nr);
+//         // row range for this thread
+//         let ir0 = dr * ith;
+//         let ir1 = std::cmp::min(ir0 + dr, nr);
 
-        let scale = (1.0 / (D as f64).sqrt()) as f32;
+//         let scale = (1.0 / (D as f64).sqrt()) as f32;
 
-        //printf("P=%d N=%d D=%d ir0=%d ir1=%d scale = %f\n", P, N, D, ir0, ir1, scale);
+//         //printf("P=%d N=%d D=%d ir0=%d ir1=%d scale = %f\n", P, N, D, ir0, ir1, scale);
 
-        let wdata = vec![
-            0u8;
-            M * std::mem::size_of::<f32>() //ith * (2 * M + CACHE_LINE_SIZE_F32)
-                + M * std::mem::size_of::<f16>()
-        ];
+//         let wdata = vec![
+//             0u8;
+//             M * std::mem::size_of::<f32>() //ith * (2 * M + CACHE_LINE_SIZE_F32)
+//                 + M * std::mem::size_of::<f16>()
+//         ];
 
-        for ir in ir0..ir1 {
-            // q indices
-            let iq3 = ir / (neq2 * neq1);
-            let iq2 = (ir - iq3 * neq2 * neq1) / neq1;
-            let iq1 = ir - iq3 * neq2 * neq1 - iq2 * neq1;
+//         for ir in ir0..ir1 {
+//             // q indices
+//             let iq3 = ir / (neq2 * neq1);
+//             let iq2 = (ir - iq3 * neq2 * neq1) / neq1;
+//             let iq1 = ir - iq3 * neq2 * neq1 - iq2 * neq1;
 
-            let Sf32 = unsafe {
-                std::slice::from_raw_parts_mut(
-                    wdata.as_ptr() as *mut f32,
-                    wdata.len() / std::mem::size_of::<f32>(),
-                )
-            };
+//             let Sf32 = unsafe {
+//                 std::slice::from_raw_parts_mut(
+//                     wdata.as_ptr() as *mut f32,
+//                     wdata.len() / std::mem::size_of::<f32>(),
+//                 )
+//             };
 
-            let (S, S2) = Sf32.split_at_mut(M); //ith * (2 * M + CACHE_LINE_SIZE_F32) +
+//             let (S, S2) = Sf32.split_at_mut(M); //ith * (2 * M + CACHE_LINE_SIZE_F32) +
 
-            // let S = &mut Sf32[ith * (2 * M + CACHE_LINE_SIZE_F32)..];
+//             // let S = &mut Sf32[ith * (2 * M + CACHE_LINE_SIZE_F32)..];
 
-            for ic in 0..nek1 {
-                // k indices
-                let ik3 = iq3;
-                let ik2 = iq2;
-                let ik1 = ic;
+//             for ic in 0..nek1 {
+//                 // k indices
+//                 let ik3 = iq3;
+//                 let ik2 = iq2;
+//                 let ik1 = ic;
 
-                // S indices
-                let i1 = ik1;
+//                 // S indices
+//                 let i1 = ik1;
 
-                unsafe {
-                    vec_dot_f16(
-                        k[ik1 * nbk1 + ik2 * nbk2 + ik3 * nbk3..].as_ptr(),
-                        q[iq1 * nbq1 + iq2 * nbq2 + iq3 * nbq3..].as_ptr(),
-                        S[i1..].as_mut_ptr(),
-                        neq0,
-                    )
-                };
-            }
+//                 unsafe {
+//                     vec_dot_f16(
+//                         k[ik1 * nbk1 + ik2 * nbk2 + ik3 * nbk3..].as_ptr(),
+//                         q[iq1 * nbq1 + iq2 * nbq2 + iq3 * nbq3..].as_ptr(),
+//                         S[i1..].as_mut_ptr(),
+//                         neq0,
+//                     )
+//                 };
+//             }
 
-            // scale
-            vec_scale_f32(nek1, S, scale);
+//             // scale
+//             vec_scale_f32(nek1, S, scale);
 
-            if false {
-                for i in P..M {
-                    if (i > P + iq1) {
-                        S[i] = -std::f32::INFINITY;
-                    }
-                }
-            }
+//             if false {
+//                 for i in P..M {
+//                     if (i > P + iq1) {
+//                         S[i] = -std::f32::INFINITY;
+//                     }
+//                 }
+//             }
 
-            // softmax
-            {
-                let mut max = -std::f32::INFINITY;
-                for i in 0..M {
-                    max = max.max(S[i]) //f32::max(max, );
-                }
+//             // softmax
+//             {
+//                 let mut max = -std::f32::INFINITY;
+//                 for i in 0..M {
+//                     max = max.max(S[i]) //f32::max(max, );
+//                 }
 
-                let mut sum: f32 = 0.0;
+//                 let mut sum: f32 = 0.0;
 
-                //  let ss: u16 = 0;
-                for i in 0..M {
-                    if S[i] == -std::f32::INFINITY {
-                        S[i] = 0.0;
-                    } else {
-                        //const float val = (S[i] == -INFINITY) ? 0.0 : exp(S[i] - max);
-                        let s = f16::from_f32(S[i] - max);
-                        // let ss: u16 = unsafe { std::mem::transmute(s) };
-                        let val = GLOBAL_CPU_DEVICE_CACHE
-                            .get_exp_cache(s.to_bits() as usize)
-                            .to_f32();
-                        sum += val;
-                        S[i] = val;
-                    }
-                }
+//                 //  let ss: u16 = 0;
+//                 for i in 0..M {
+//                     if S[i] == -std::f32::INFINITY {
+//                         S[i] = 0.0;
+//                     } else {
+//                         //const float val = (S[i] == -INFINITY) ? 0.0 : exp(S[i] - max);
+//                         let s = f16::from_f32(S[i] - max);
+//                         // let ss: u16 = unsafe { std::mem::transmute(s) };
+//                         let val = GLOBAL_CPU_DEVICE_CACHE
+//                             .get_exp_cache(s.to_bits() as usize)
+//                             .to_f32();
+//                         sum += val;
+//                         S[i] = val;
+//                     }
+//                 }
 
-                assert!(sum > 0.0f32);
+//                 assert!(sum > 0.0f32);
 
-                sum = 1.0 / sum;
-                vec_scale_f32(M, S, sum);
-            }
+//                 sum = 1.0 / sum;
+//                 vec_scale_f32(M, S, sum);
+//             }
 
-            let S16 = unsafe { std::slice::from_raw_parts_mut(S2.as_ptr() as *mut f16, M) };
+//             let S16 = unsafe { std::slice::from_raw_parts_mut(S2.as_ptr() as *mut f16, M) };
 
-            for i in 0..M {
-                S16[i] = f16::from_f32(S[i]);
-            }
+//             for i in 0..M {
+//                 S16[i] = f16::from_f32(S[i]);
+//             }
 
-            for ic in 0..nev1 {
-                // dst indices
-                let i1 = iq1;
-                let i2 = iq2;
-                let i3 = iq3;
+//             for ic in 0..nev1 {
+//                 // dst indices
+//                 let i1 = iq1;
+//                 let i2 = iq2;
+//                 let i3 = iq3;
 
-                unsafe {
-                    vec_dot_f16(
-                        v[ic * nbv1 + i2 * nbv2 + i3 * nbv3..].as_ptr(),
-                        S16.as_ptr(),
-                        dst[ic * nb0 + i1 * nb1 + i2 * nb2 + i3 * nb3..].as_mut_ptr(),
-                        nek1,
-                    );
-                }
-            }
-        }
-        println!("std::f32::INFINITY:{}", std::f32::INFINITY);
+//                 unsafe {
+//                     vec_dot_f16(
+//                         v[ic * nbv1 + i2 * nbv2 + i3 * nbv3..].as_ptr(),
+//                         S16.as_ptr(),
+//                         dst[ic * nb0 + i1 * nb1 + i2 * nb2 + i3 * nb3..].as_mut_ptr(),
+//                         nek1,
+//                     );
+//                 }
+//             }
+//         }
+//         println!("std::f32::INFINITY:{}", std::f32::INFINITY);
 
-        Ok(())
-    }
-}
+//         Ok(())
+//     }
+// }
 
 struct Scale;
 
 impl Map2 for Scale {
     const OP: &'static str = "scale";
 
-    fn f_quant_num<T: QuantType, X>(
+    fn f_q_f32_f32<T: QuantType>(
         &self,
-        inp1: &[T],
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[f32],
         inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [X],
+        dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
     }
 
-    fn f_x_y_x<X, Y>(
+    fn f_q_x_f32<T: QuantType + TensorType, X: TensorType>(
         &self,
-        inp: &[X],
-        inp_d: &Dim,
-        k: &[Y],
-        k_d: &Dim,
-        dst: &mut [X],
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[X],
+        inp1_d: &Dim,
+        dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
     }
 
-    fn f_quant_num2<T: QuantType, X, Y>(
+    fn f_x_y_x<X: TensorType, Y: TensorType>(
         &self,
-        inp1: &[T],
+        inp0: &[X],
+        inp0_d: &Dim,
+        inp1: &[Y],
         inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [Y],
+        dst: &mut [X],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
     }
+    // fn f_quant_num<T: QuantType, X>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    // fn f_x_y_x<X, Y>(
+    //     &self,
+    //     inp: &[X],
+    //     inp_d: &Dim,
+    //     k: &[Y],
+    //     k_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    // fn f_quant_num2<T: QuantType, X, Y>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [Y],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     fn f<T: TensorType>(
         &self,
@@ -1998,6 +2633,38 @@ impl Map2 for Scale {
         dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
+        assert!(inp0_d.ggml_is_contiguous());
+        assert!(dst_d.ggml_is_contiguous());
+        assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
+        assert!(inp1_d.is_scalar());
+
+        // scale factor
+        let v = inp1[0];
+        println!("v:{:?}", v);
+
+        let ith = 0;
+        let nth = 1;
+
+        let nc = inp0_d.dim1();
+        let nr = inp0_d.nrows();
+
+        // rows per thread
+        let dr = (nr + nth - 1) / nth;
+
+        // row range for this thread
+        let ir0 = dr * ith;
+        let ir1 = std::cmp::min(ir0 + dr, nr);
+
+        let (_, nb01) = inp0_d.stride_2d();
+        let (_, nb1) = dst_d.stride_2d();
+
+        for i1 in ir0..ir1 {
+            if dst.as_ptr() != inp0.as_ptr() {
+                dst[i1 * nb1..i1 * nb1 + nc].copy_from_slice(&inp0[i1 * nb01..i1 * nb01 + nc]);
+            }
+            T::vec_scale(nc, &mut dst[i1 * nb1..], v);
+        }
+        Ok(())
         // assert!(inp0_d.ggml_is_contiguous());
         // assert!(dst_d.ggml_is_contiguous());
         // assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
@@ -2024,63 +2691,62 @@ impl Map2 for Scale {
         // for i1 in ir0..ir1 {
         //     vec_scale_f32(nc, &mut dst[i1 * nb1..], v);
         // }
-        Ok(())
     }
 
-    fn f_quant_f32<T: QuantType>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_quant_f32<T: QuantType>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[f32],
+    //     inp2_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
-    fn f_f32(
-        &self,
-        inp0: &[f32],
-        inp0_d: &Dim,
-        inp1: &[f32],
-        inp1_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        assert!(inp0_d.ggml_is_contiguous());
-        assert!(dst_d.ggml_is_contiguous());
-        assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
-        assert!(inp1_d.is_scalar());
+    // fn f_f32(
+    //     &self,
+    //     inp0: &[f32],
+    //     inp0_d: &Dim,
+    //     inp1: &[f32],
+    //     inp1_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     assert!(inp0_d.ggml_is_contiguous());
+    //     assert!(dst_d.ggml_is_contiguous());
+    //     assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
+    //     assert!(inp1_d.is_scalar());
 
-        // scale factor
-        let v = inp1[0];
-        println!("v:{}", v);
+    //     // scale factor
+    //     let v = inp1[0];
+    //     println!("v:{}", v);
 
-        let ith = 0;
-        let nth = 1;
+    //     let ith = 0;
+    //     let nth = 1;
 
-        let nc = inp0_d.dim1();
-        let nr = inp0_d.nrows();
+    //     let nc = inp0_d.dim1();
+    //     let nr = inp0_d.nrows();
 
-        // rows per thread
-        let dr = (nr + nth - 1) / nth;
+    //     // rows per thread
+    //     let dr = (nr + nth - 1) / nth;
 
-        // row range for this thread
-        let ir0 = dr * ith;
-        let ir1 = std::cmp::min(ir0 + dr, nr);
+    //     // row range for this thread
+    //     let ir0 = dr * ith;
+    //     let ir1 = std::cmp::min(ir0 + dr, nr);
 
-        let (_, nb01) = inp0_d.stride_2d();
-        let (_, nb1) = dst_d.stride_2d();
+    //     let (_, nb01) = inp0_d.stride_2d();
+    //     let (_, nb1) = dst_d.stride_2d();
 
-        for i1 in ir0..ir1 {
-            if dst.as_ptr() != inp0.as_ptr() {
-                dst[i1 * nb1..i1 * nb1 + nc].copy_from_slice(&inp0[i1 * nb01..i1 * nb01 + nc]);
-            }
-            vec_scale_f32(nc, &mut dst[i1 * nb1..], v);
-        }
-        Ok(())
-    }
+    //     for i1 in ir0..ir1 {
+    //         if dst.as_ptr() != inp0.as_ptr() {
+    //             dst[i1 * nb1..i1 * nb1 + nc].copy_from_slice(&inp0[i1 * nb01..i1 * nb01 + nc]);
+    //         }
+    //         f32::vec_scale(nc, &mut dst[i1 * nb1..], v);
+    //     }
+    //     Ok(())
+    // }
 }
 
 struct GetRows;
@@ -2088,16 +2754,78 @@ struct GetRows;
 impl Map2 for GetRows {
     const OP: &'static str = "get_rows";
 
-    fn f_quant_num<T: QuantType, X>(
+    // fn f_quant_num<T: QuantType, X>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+    fn f<T: TensorType>(
         &self,
+        inp0: &[T],
+        inp0_d: &Dim,
         inp1: &[T],
         inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [X],
+        dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
+    }
+
+    fn f_q_f32_f32<T: QuantType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[f32],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    // fn f_q_x_f32<T: QuantType + TensorType, X: TensorType, Y: TensorType>(
+    //     &self,
+    //     inp0: &[T],
+    //     inp0_d: &Dim,
+    //     inp1: &[X],
+    //     inp1_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    fn f_q_x_f32<T: QuantType + TensorType, X: TensorType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[X],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        let nc = inp0_d.dim1();
+        let nr = inp1_d.elem_count();
+        let (ne0, ne1) = dst_d.dim2();
+        let (_, nbv1) = inp0_d.stride_2d();
+        let (_, nbd1) = dst_d.stride_2d();
+        assert!(ne0 == nc);
+        assert!(ne1 == nr);
+        assert!(inp0_d.stride_1d() == 1);
+        for i in 0..nr {
+            let r = inp1[i].to_usize();
+            <T as QuantType>::to_f32(
+                &inp0[r * nbv1..r * nbv1 + nc],
+                &mut dst[i * nbd1..i * nbd1 + nc],
+            )
+        }
+        Ok(())
     }
 
     fn f_x_y_x<X, Y>(
@@ -2112,56 +2840,56 @@ impl Map2 for GetRows {
         todo!()
     }
 
-    fn f_quant_num2<T: QuantType, X, Y>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [Y],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_quant_num2<T: QuantType, X, Y>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [Y],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
-    fn f_Q40_I32_f32(
-        &self,
-        inp0: &[BlockQ4_0],
-        inp0_d: &Dim,
-        inp1: &[i32],
-        inp1_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        let nc = inp0_d.dim1();
-        let nr = inp1_d.elem_count();
-        let (ne0, ne1) = dst_d.dim2();
-        let (_, nbv1) = inp0_d.stride_2d();
-        let (_, nbd1) = dst_d.stride_2d();
-        assert!(ne0 == nc);
-        assert!(ne1 == nr);
-        assert!(inp0_d.stride_1d() == 1);
-        for i in 0..nr {
-            let r = inp1[i] as usize;
-            <BlockQ4_0 as QuantType>::to_f32(
-                &inp0[r * nbv1..r * nbv1 + nc],
-                &mut dst[i * nbd1..i * nbd1 + nc],
-            )
-        }
-        Ok(())
-    }
+    // fn f_Q40_I32_f32(
+    //     &self,
+    //     inp0: &[BlockQ4_0],
+    //     inp0_d: &Dim,
+    //     inp1: &[i32],
+    //     inp1_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     let nc = inp0_d.dim1();
+    //     let nr = inp1_d.elem_count();
+    //     let (ne0, ne1) = dst_d.dim2();
+    //     let (_, nbv1) = inp0_d.stride_2d();
+    //     let (_, nbd1) = dst_d.stride_2d();
+    //     assert!(ne0 == nc);
+    //     assert!(ne1 == nr);
+    //     assert!(inp0_d.stride_1d() == 1);
+    //     for i in 0..nr {
+    //         let r = inp1[i] as usize;
+    //         <BlockQ4_0 as QuantType>::to_f32(
+    //             &inp0[r * nbv1..r * nbv1 + nc],
+    //             &mut dst[i * nbd1..i * nbd1 + nc],
+    //         )
+    //     }
+    //     Ok(())
+    // }
 
-    fn f_quant_f32<T: QuantType>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_quant_f32<T: QuantType>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[f32],
+    //     inp2_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 }
 
 struct RopeCustom {
@@ -2297,50 +3025,95 @@ impl Map2 for RopeCustom {
         Ok(())
     }
 
-    fn f_quant_num<T: QuantType, X>(
+    fn f_q_f32_f32<T: QuantType + TensorType>(
         &self,
-        inp1: &[T],
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[f32],
         inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
-
-    fn f_quant_num2<T: QuantType, X, Y>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [Y],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
-
-    fn f_quant_f32<T: QuantType>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
     ) -> GResult<()> {
         todo!()
     }
+
+    fn f_q_x_f32<T: QuantType + TensorType, X: TensorType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[X],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()> {
+        todo!()
+    }
+
+    // fn f_q_x_x<T: QuantType, X: TensorType>(
+    //     &self,
+    //     inp0: &[T],
+    //     inp0_d: &Dim,
+    //     inp1: &[X],
+    //     inp1_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    // fn f_q_x_y<T: QuantType + TensorType, X: TensorType, Y: TensorType>(
+    //     &self,
+    //     inp0: &[T],
+    //     inp0_d: &Dim,
+    //     inp1: &[X],
+    //     inp1_d: &Dim,
+    //     dst: &mut [Y],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    // fn f_quant_num<T: QuantType, X>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    // fn f_quant_num2<T: QuantType, X, Y>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[X],
+    //     inp2_d: &Dim,
+    //     dst: &mut [Y],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
+
+    // fn f_quant_f32<T: QuantType>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[f32],
+    //     inp2_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 }
 
 struct Silu;
 impl Map for Silu {
     const OP: &'static str = "silu";
     fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
-        todo!()
-    }
-    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
         let ith = 0;
         let nth = 1;
 
@@ -2358,11 +3131,34 @@ impl Map for Silu {
         let ir1 = min(ir0 + dr, nr);
 
         for i1 in ir0..ir1 {
-            vec_silu_f32(nc, &mut dst[i1 * nb1..], &inp[i1 * nb01..]);
+            T::vec_silu(nc, &mut dst[i1 * nb1..], &inp[i1 * nb01..]);
         }
 
         Ok(())
     }
+    // fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+    //     let ith = 0;
+    //     let nth = 1;
+
+    //     let nc = inp_d.dim1();
+    //     let nr = inp_d.nrows();
+
+    //     let (nb00, nb01) = inp_d.stride_2d();
+    //     let (nb0, nb1) = dst_d.stride_2d();
+
+    //     // rows per thread
+    //     let dr = (nr + nth - 1) / nth;
+
+    //     // row range for this thread
+    //     let ir0 = dr * ith;
+    //     let ir1 = min(ir0 + dr, nr);
+
+    //     for i1 in ir0..ir1 {
+    //         vec_silu_f32(nc, &mut dst[i1 * nb1..], &inp[i1 * nb01..]);
+    //     }
+
+    //     Ok(())
+    // }
 
     fn f_x_y<X: TensorType, Y: TensorType>(
         &self,
@@ -2388,10 +3184,13 @@ impl Map for SoftMax {
     ) -> GResult<()> {
         todo!()
     }
-    fn f<T: TensorType>(&self, inp: &[T], inp_d: &Dim, dst: &mut [T], dst_d: &Dim) -> GResult<()> {
-        todo!()
-    }
-    fn f_f32(&self, inp0: &[f32], inp0_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+    fn f<T: TensorType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        dst: &mut [T],
+        dst_d: &Dim,
+    ) -> GResult<()> {
         let ith = 0;
         let nth = 1;
 
@@ -2414,37 +3213,92 @@ impl Map for SoftMax {
 
             // softmax
             {
-                let mut max = -std::f32::INFINITY;
-                for i in 0..nc {
-                    max = max.max(sp[i]) //f32::max(max, );
-                }
+                T::softmax(nc, dp, sp);
+                // let mut max = -std::f32::INFINITY;
+                // for i in 0..nc {
+                //     max = max.max(sp[i]) //f32::max(max, );
+                // }
 
-                let mut sum: f32 = 0.0;
+                // let mut sum: f32 = 0.0;
 
-                //  let ss: u16 = 0;
-                for i in 0..nc {
-                    if sp[i] == -std::f32::INFINITY {
-                        dp[i] = 0.0;
-                    } else {
-                        //const float val = (S[i] == -INFINITY) ? 0.0 : exp(S[i] - max);
-                        let s = (sp[i] - max).to_f16();
-                        // let ss: u16 = unsafe { std::mem::transmute(s) };
-                        let val = GLOBAL_CPU_DEVICE_CACHE
-                            .get_exp_cache(s.to_bits() as usize)
-                            .to_f32();
-                        sum += val;
-                        dp[i] = val;
-                    }
-                }
+                // //  let ss: u16 = 0;
+                // for i in 0..nc {
+                //     if sp[i] == -std::f32::INFINITY {
+                //         dp[i] = 0.0;
+                //     } else {
+                //         //const float val = (S[i] == -INFINITY) ? 0.0 : exp(S[i] - max);
+                //         let s = (sp[i] - max).to_f16();
+                //         // let ss: u16 = unsafe { std::mem::transmute(s) };
+                //         let val = GLOBAL_CPU_DEVICE_CACHE
+                //             .get_exp_cache(s.to_bits() as usize)
+                //             .to_f32();
+                //         sum += val;
+                //         dp[i] = val;
+                //     }
+                // }
 
-                assert!(sum > 0.0f32);
+                // assert!(sum > 0.0f32);
 
-                sum = 1.0 / sum;
-                vec_scale_f32(nc, dp, sum);
+                // sum = 1.0 / sum;
+                // vec_scale_f32(nc, dp, sum);
             }
         }
         Ok(())
     }
+    // fn f_f32(&self, inp0: &[f32], inp0_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()> {
+    //     let ith = 0;
+    //     let nth = 1;
+
+    //     let (nb00, nb01, nb02, nb03) = inp0_d.stride_4d();
+    //     let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
+
+    //     let nc = inp0_d.dim1();
+    //     let nr = inp0_d.nrows();
+
+    //     // rows per thread
+    //     let dr = (nr + nth - 1) / nth;
+
+    //     // row range for this thread
+    //     let ir0 = dr * ith;
+    //     let ir1 = min(ir0 + dr, nr);
+
+    //     for i1 in ir0..ir1 {
+    //         let sp = &inp0[i1 * nb01..];
+    //         let dp = &mut dst[i1 * nb1..];
+
+    //         // softmax
+    //         {
+    //             let mut max = -std::f32::INFINITY;
+    //             for i in 0..nc {
+    //                 max = max.max(sp[i]) //f32::max(max, );
+    //             }
+
+    //             let mut sum: f32 = 0.0;
+
+    //             //  let ss: u16 = 0;
+    //             for i in 0..nc {
+    //                 if sp[i] == -std::f32::INFINITY {
+    //                     dp[i] = 0.0;
+    //                 } else {
+    //                     //const float val = (S[i] == -INFINITY) ? 0.0 : exp(S[i] - max);
+    //                     let s = (sp[i] - max).to_f16();
+    //                     // let ss: u16 = unsafe { std::mem::transmute(s) };
+    //                     let val = GLOBAL_CPU_DEVICE_CACHE
+    //                         .get_exp_cache(s.to_bits() as usize)
+    //                         .to_f32();
+    //                     sum += val;
+    //                     dp[i] = val;
+    //                 }
+    //             }
+
+    //             assert!(sum > 0.0f32);
+
+    //             sum = 1.0 / sum;
+    //             vec_scale_f32(nc, dp, sum);
+    //         }
+    //     }
+    //     Ok(())
+    // }
 }
 
 pub fn galois_conv_1d_1s(kernel: &Tensor, src: &Tensor, dst: &mut Tensor) -> GResult<()> {
@@ -2538,18 +3392,18 @@ pub fn galois_gelu(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_norm(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(d)) => {
-            Norm.map(s, src.dim(), d, dst_dim)?;
-        }
-        _ => {
-            todo!()
-        }
-    }
-    Ok(())
-}
+// pub fn galois_norm(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
+//     let (dst_device, dst_dim) = dst.device_dim();
+//     match (src.device(), dst_device) {
+//         (Device::Cpu(s), Device::Cpu(d)) => {
+//             Norm.map(s, src.dim(), d, dst_dim)?;
+//         }
+//         _ => {
+//             todo!()
+//         }
+//     }
+//     Ok(())
+// }
 
 pub fn galois_rms_norm(src: &Tensor, dst: &mut Tensor, eps: f32) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
@@ -2590,18 +3444,18 @@ pub fn galois_cont(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_flash_attn(Q: &Tensor, K: &Tensor, V: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (Q.device(), K.device(), V.device(), dst_device) {
-        (Device::Cpu(q), Device::Cpu(k), Device::Cpu(v), Device::Cpu(d)) => {
-            FlashAttn.map(q, Q.dim(), k, K.dim(), v, V.dim(), d, dst_dim)?;
-        }
-        _ => {
-            todo!()
-        }
-    }
-    Ok(())
-}
+// pub fn galois_flash_attn(Q: &Tensor, K: &Tensor, V: &Tensor, dst: &mut Tensor) -> GResult<()> {
+//     let (dst_device, dst_dim) = dst.device_dim();
+//     match (Q.device(), K.device(), V.device(), dst_device) {
+//         (Device::Cpu(q), Device::Cpu(k), Device::Cpu(v), Device::Cpu(d)) => {
+//             FlashAttn.map(q, Q.dim(), k, K.dim(), v, V.dim(), d, dst_dim)?;
+//         }
+//         _ => {
+//             todo!()
+//         }
+//     }
+//     Ok(())
+// }
 
 pub fn galois_soft_max(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     let (dst_device, dst_dim) = dst.device_dim();
@@ -2709,7 +3563,7 @@ trait Map {
         dst_d: &Dim,
     ) -> GResult<()>;
 
-    fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()>;
+    //fn f_f32(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f32], dst_d: &Dim) -> GResult<()>;
 
     //fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()>;
 
@@ -2719,7 +3573,7 @@ trait Map {
                 self.f(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::F32(d)) => {
-                self.f_f32(v1.as_slice(), d1, d.as_slice_mut(), d3)
+                self.f(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::F16(d)) => {
                 self.f_x_y(v1.as_slice(), d1, d.as_slice_mut(), d3)
@@ -2735,10 +3589,10 @@ trait Map2 {
     const OP: &'static str;
     fn f<T: TensorType>(
         &self,
-        inp: &[T],
-        inp_d: &Dim,
-        k: &[T],
-        k_d: &Dim,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[T],
+        inp1_d: &Dim,
         dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
@@ -2747,67 +3601,67 @@ trait Map2 {
 
     fn f_x_y_x<X: TensorType, Y: TensorType>(
         &self,
-        inp: &[X],
-        inp_d: &Dim,
-        k: &[Y],
-        k_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()>;
-
-    fn f_quant_num<T: QuantType, X>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()>;
-
-    fn f_quant_num2<T: QuantType, X, Y>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[X],
-        inp2_d: &Dim,
-        dst: &mut [Y],
-        dst_d: &Dim,
-    ) -> GResult<()>;
-
-    fn f_quant_f32<T: QuantType>(
-        &self,
-        inp1: &[T],
-        inp1_d: &Dim,
-        inp2: &[f32],
-        inp2_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()>;
-
-    fn f_f32(
-        &self,
-        inp: &[f32],
-        inp_d: &Dim,
-        k: &[f32],
-        k_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        self.f(inp, inp_d, k, k_d, dst, dst_d)
-    }
-
-    fn f_Q40_I32_f32(
-        &self,
-        inp0: &[BlockQ4_0],
+        inp0: &[X],
         inp0_d: &Dim,
-        inp1: &[i32],
+        inp1: &[Y],
+        inp1_d: &Dim,
+        dst: &mut [X],
+        dst_d: &Dim,
+    ) -> GResult<()>;
+
+    fn f_q_f32_f32<T: QuantType + TensorType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[f32],
         inp1_d: &Dim,
         dst: &mut [f32],
         dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    ) -> GResult<()>;
+
+    fn f_q_x_f32<T: QuantType + TensorType, X: TensorType>(
+        &self,
+        inp0: &[T],
+        inp0_d: &Dim,
+        inp1: &[X],
+        inp1_d: &Dim,
+        dst: &mut [f32],
+        dst_d: &Dim,
+    ) -> GResult<()>;
+
+    // fn f_quant_f32<T: QuantType + TensorType>(
+    //     &self,
+    //     inp1: &[T],
+    //     inp1_d: &Dim,
+    //     inp2: &[f32],
+    //     inp2_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()>;
+
+    // fn f_f32(
+    //     &self,
+    //     inp: &[f32],
+    //     inp_d: &Dim,
+    //     k: &[f32],
+    //     k_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     self.f(inp, inp_d, k, k_d, dst, dst_d)
+    // }
+
+    // fn f_Q40_I32_f32(
+    //     &self,
+    //     inp0: &[BlockQ4_0],
+    //     inp0_d: &Dim,
+    //     inp1: &[i32],
+    //     inp1_d: &Dim,
+    //     dst: &mut [f32],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     // fn f_Q4_0_f32(
     //     &self,
@@ -2847,76 +3701,77 @@ trait Map2 {
                 self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
-                self.f_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+                self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::F16(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
-                self.f_quant_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+                self.f_q_f32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::Q4_0(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
-                self.f_Q40_I32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+                self.f_q_x_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::Q4_0(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
-                self.f_quant_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+                self.f_q_f32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::Q6K(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
-                self.f_quant_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
+                self.f_q_f32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             (CpuDevice::F32(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
                 self.f_x_y_x(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             _ => {
+                println!("not todo{}", Self::OP);
                 todo!()
             }
         }
     }
 }
 
-trait Map4 {
-    const OP: &'static str;
+// trait Map4 {
+//     const OP: &'static str;
 
-    fn f_f16_f16_f16_f32(
-        &self,
-        inp1: &[f16],
-        inp1_d: &Dim,
-        inp2: &[f16],
-        inp2_d: &Dim,
-        inp3: &[f16],
-        inp3_d: &Dim,
-        dst: &mut [f32],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+//     fn f_f16_f16_f16_f32(
+//         &self,
+//         inp1: &[f16],
+//         inp1_d: &Dim,
+//         inp2: &[f16],
+//         inp2_d: &Dim,
+//         inp3: &[f16],
+//         inp3_d: &Dim,
+//         dst: &mut [f32],
+//         dst_d: &Dim,
+//     ) -> GResult<()> {
+//         todo!()
+//     }
 
-    fn map(
-        &self,
-        dev1: &CpuDevice,
-        d1: &Dim,
-        dev2: &CpuDevice,
-        d2: &Dim,
-        dev3: &CpuDevice,
-        d3: &Dim,
-        dst: &mut CpuDevice,
-        d4: &Dim,
-    ) -> GResult<()> {
-        match (dev1, dev2, dev3, dst) {
-            (CpuDevice::F16(v1), CpuDevice::F16(v2), CpuDevice::F16(v3), CpuDevice::F32(d)) => self
-                .f_f16_f16_f16_f32(
-                    v1.as_slice(),
-                    d1,
-                    v2.as_slice(),
-                    d2,
-                    v3.as_slice(),
-                    d3,
-                    d.as_slice_mut(),
-                    d4,
-                ),
-            _ => {
-                todo!()
-            }
-        }
-    }
-}
+//     fn map(
+//         &self,
+//         dev1: &CpuDevice,
+//         d1: &Dim,
+//         dev2: &CpuDevice,
+//         d2: &Dim,
+//         dev3: &CpuDevice,
+//         d3: &Dim,
+//         dst: &mut CpuDevice,
+//         d4: &Dim,
+//     ) -> GResult<()> {
+//         match (dev1, dev2, dev3, dst) {
+//             (CpuDevice::F16(v1), CpuDevice::F16(v2), CpuDevice::F16(v3), CpuDevice::F32(d)) => self
+//                 .f_f16_f16_f16_f32(
+//                     v1.as_slice(),
+//                     d1,
+//                     v2.as_slice(),
+//                     d2,
+//                     v3.as_slice(),
+//                     d3,
+//                     d.as_slice_mut(),
+//                     d4,
+//                 ),
+//             _ => {
+//                 todo!()
+//             }
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod tests {

@@ -61,7 +61,7 @@ pub(crate) unsafe fn mul_sum_i8_pairs_float(x: __m256i, y: __m256i) -> __m256 {
     mul_sum_us8_pairs_float(ax, sy)
 }
 
-pub trait QuantType: Sized + Clone {
+pub trait QuantType: Sized + Clone + Sync {
     const BLCK_SIZE: usize;
     type VecDotType: QuantType;
     fn to_f32(src: &[Self], dst: &mut [f32]);

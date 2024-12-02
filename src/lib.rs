@@ -10,10 +10,14 @@ pub mod op;
 pub mod shape;
 mod simd;
 pub mod similarity;
+use crate::op::GLOBAL_CPU_DEVICE_CACHE;
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
+use rayon::prelude::*;
+use std::simd::f32x32;
+use std::simd::num::SimdFloat;
 mod zip;
 extern crate alloc;
 use crate::error::{GError, GResult};
@@ -34,9 +38,8 @@ use crate::shape::Layout;
 use half::f16;
 use num_traits::{FromPrimitive, ToPrimitive};
 pub type F16 = half::f16;
-// const STEP: usize = 128;
-// const EPR: usize = 32;
-// const ARR: usize = STEP / EPR;
+
+const STEP: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
@@ -206,11 +209,11 @@ macro_rules! impl_fromf64 {
 //     };
 // }
 
-impl ToUsize for f16 {
-    fn as_usize(&self) -> usize {
-        self.to_usize().unwrap()
-    }
-}
+// impl ToUsize for f16 {
+//     fn as_usize(&self) -> usize {
+//         self.to_usize().unwrap()
+//     }
+// }
 
 impl FromF32 for f16 {
     fn from_f32(a: f32) -> Self {
@@ -244,12 +247,44 @@ impl TensorType for f16 {
         ToPrimitive::to_i32(self).unwrap_or(0)
     }
 
+    fn to_usize(&self) -> usize {
+        ToPrimitive::to_usize(self).unwrap_or(0)
+    }
+
     fn from_f32(x: f32) -> Self {
         Self::from_f32(x)
     }
 
     fn from_x<X: TensorType>(x: X) -> Self {
         x.to_f16()
+    }
+
+    fn reduce_sum(chunk: &[Self]) -> Self {
+        todo!()
+    }
+
+    fn vec_silu(n: usize, y: &mut [Self], x: &[Self]) {
+        todo!()
+    }
+
+    fn vec_scale(n: usize, y: &mut [Self], v: Self) {
+        todo!()
+    }
+
+    fn softmax(nc: usize, dp: &mut [Self], sp: &[Self]) {
+        todo!()
+    }
+
+    fn rms_norm(ne00: usize, x: &[Self], y: &mut [Self], eps: f32) {
+        todo!()
+    }
+
+    fn vec_add(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        todo!()
+    }
+
+    fn vec_mul(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        todo!()
     }
 }
 
@@ -268,12 +303,142 @@ impl TensorType for f32 {
         *self as i32
     }
 
+    fn to_usize(&self) -> usize {
+        *self as usize
+    }
+
     fn from_f32(x: f32) -> Self {
         x
     }
 
     fn from_x<X: TensorType>(x: X) -> Self {
         x.to_f32()
+    }
+
+    #[inline]
+    fn reduce_sum(chunk: &[Self]) -> Self {
+        let mut v = f32x32::from_slice(chunk);
+        v *= v;
+        v.reduce_sum()
+    }
+
+    #[inline]
+    fn vec_silu(n: usize, y: &mut [Self], x: &[Self]) {
+        for i in 0..n {
+            y[i] = GLOBAL_CPU_DEVICE_CACHE
+                .get_silu_cache(f16::from_f32(x[i]).to_bits() as usize)
+                .to_f32()
+        }
+    }
+    #[inline]
+    fn vec_scale(n: usize, y: &mut [Self], v: Self) {
+        let n32 = n & !(STEP - 1);
+        let scale = std::simd::f32x32::splat(v);
+        y[..n32].chunks_exact_mut(STEP).for_each(|d| {
+            let va = std::simd::f32x32::from_slice(d);
+            let va = va * scale;
+            va.copy_to_slice(d);
+        });
+        for i in n32..n {
+            y[i] *= v;
+        }
+    }
+
+    fn softmax(nc: usize, dp: &mut [Self], sp: &[Self]) {
+        let mut max = -std::f32::INFINITY;
+        for i in 0..nc {
+            max = max.max(sp[i]) //f32::max(max, );
+        }
+
+        let mut sum: f32 = 0.0;
+
+        //  let ss: u16 = 0;
+        for i in 0..nc {
+            if sp[i] == -std::f32::INFINITY {
+                dp[i] = 0.0;
+            } else {
+                //const float val = (S[i] == -INFINITY) ? 0.0 : exp(S[i] - max);
+                let s = (sp[i] - max).to_f16();
+                // let ss: u16 = unsafe { std::mem::transmute(s) };
+                let val = GLOBAL_CPU_DEVICE_CACHE
+                    .get_exp_cache(s.to_bits() as usize)
+                    .to_f32();
+                sum += val;
+                dp[i] = val;
+            }
+        }
+
+        assert!(sum > 0.0f32);
+
+        sum = 1.0 / sum;
+        Self::vec_scale(nc, dp, sum);
+    }
+
+    fn rms_norm(ne00: usize, x: &[Self], y: &mut [Self], eps: f32) {
+        let n32 = ne00 & !(STEP - 1);
+        let mut mean = x[..n32]
+            .chunks_exact(STEP)
+            .map(|chunk| Self::reduce_sum(chunk))
+            .sum::<f32>();
+        mean /= ne00 as f32;
+        y[..ne00].copy_from_slice(&x[..ne00]);
+        let scale = 1.0 / (mean + eps).sqrt();
+        Self::vec_scale(ne00, y, scale);
+    }
+
+    fn vec_add(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        dst.par_chunks_exact_mut(4)
+            .zip(inp1.par_chunks_exact(4))
+            .zip(inp2.par_chunks_exact(4))
+            .for_each(|((d, ia), ib)| {
+                let va = std::simd::f32x4::from_slice(ia);
+                let vb = std::simd::f32x4::from_slice(ib);
+                let vc = va + vb;
+                vc.copy_to_slice(d);
+            });
+        let dst_length = dst.len();
+        // 处理剩余部分
+        // let remainder_a = &inp1[inp1.len() / 4 * 4..];
+        // let remainder_b = &inp2[inp2.len() / 4 * 4..];
+        // let remainder_result = &mut dst[dst_length / 4 * 4..];
+        // for i in 0..remainder_a.len() {
+        //     remainder_result[i] = remainder_a[i] + remainder_b[i];
+        // }
+
+        dst[dst_length / 4 * 4..]
+            .iter_mut()
+            .zip(
+                inp1[inp1.len() / 4 * 4..]
+                    .iter()
+                    .zip(inp2[inp2.len() / 4 * 4..].iter()),
+            )
+            .for_each(|(res, (a, b))| {
+                *res = *a + *b;
+            });
+    }
+
+    fn vec_mul(inp1: &[f32], inp2: &[f32], dst: &mut [f32]) {
+        dst.par_chunks_exact_mut(4)
+            .zip(inp1.par_chunks_exact(4))
+            .zip(inp2.par_chunks_exact(4))
+            .for_each(|((d, ia), ib)| {
+                let va = std::simd::f32x4::from_slice(ia);
+                let vb = std::simd::f32x4::from_slice(ib);
+                let vc = va * vb;
+                vc.copy_to_slice(d);
+            });
+        let dst_length = dst.len();
+        // 处理剩余部分
+        dst[dst_length / 4 * 4..]
+            .iter_mut()
+            .zip(
+                inp1[inp1.len() / 4 * 4..]
+                    .iter()
+                    .zip(inp2[inp2.len() / 4 * 4..].iter()),
+            )
+            .for_each(|(res, (a, b))| {
+                *res = *a * *b;
+            });
     }
 }
 
@@ -292,12 +457,43 @@ impl TensorType for i32 {
         *self
     }
 
+    fn to_usize(&self) -> usize {
+        *self as usize
+    }
+
     fn from_f32(x: f32) -> Self {
         x as i32
     }
 
     fn from_x<X: TensorType>(x: X) -> Self {
         x.to_i32()
+    }
+
+    fn reduce_sum(chunk: &[Self]) -> Self {
+        todo!()
+    }
+
+    fn vec_silu(n: usize, y: &mut [Self], x: &[Self]) {
+        todo!()
+    }
+    fn vec_scale(n: usize, y: &mut [Self], v: Self) {
+        todo!()
+    }
+
+    fn softmax(nc: usize, dp: &mut [Self], sp: &[Self]) {
+        todo!()
+    }
+
+    fn rms_norm(ne00: usize, x: &[Self], y: &mut [Self], eps: f32) {
+        todo!()
+    }
+
+    fn vec_add(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        todo!()
+    }
+
+    fn vec_mul(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        todo!()
     }
 }
 
@@ -323,6 +519,38 @@ impl TensorType for BlockQ4_0 {
     fn to_i32(&self) -> i32 {
         todo!()
     }
+
+    fn to_usize(&self) -> usize {
+        todo!()
+    }
+
+    fn reduce_sum(chunk: &[Self]) -> Self {
+        todo!()
+    }
+
+    fn vec_silu(n: usize, y: &mut [Self], x: &[Self]) {
+        todo!()
+    }
+
+    fn vec_scale(n: usize, y: &mut [Self], v: Self) {
+        todo!()
+    }
+
+    fn softmax(nc: usize, dp: &mut [Self], sp: &[Self]) {
+        todo!()
+    }
+
+    fn rms_norm(ne00: usize, x: &[Self], y: &mut [Self], eps: f32) {
+        todo!()
+    }
+
+    fn vec_add(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        todo!()
+    }
+
+    fn vec_mul(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        todo!()
+    }
 }
 
 impl TensorType for BlockQ6K {
@@ -345,6 +573,38 @@ impl TensorType for BlockQ6K {
     }
 
     fn to_i32(&self) -> i32 {
+        todo!()
+    }
+
+    fn to_usize(&self) -> usize {
+        todo!()
+    }
+
+    fn reduce_sum(chunk: &[Self]) -> Self {
+        todo!()
+    }
+
+    fn vec_silu(n: usize, y: &mut [Self], x: &[Self]) {
+        todo!()
+    }
+
+    fn vec_scale(n: usize, y: &mut [Self], v: Self) {
+        todo!()
+    }
+
+    fn softmax(nc: usize, dp: &mut [Self], sp: &[Self]) {
+        todo!()
+    }
+
+    fn rms_norm(ne00: usize, x: &[Self], y: &mut [Self], eps: f32) {
+        todo!()
+    }
+
+    fn vec_add(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        todo!()
+    }
+
+    fn vec_mul(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
         todo!()
     }
 }
@@ -386,9 +646,25 @@ pub trait TensorType:
 
     fn to_i32(&self)->i32;
 
+    fn to_usize(&self)->usize;
+
     fn from_f32(x:f32)-> Self ;
 
     fn from_x<X:TensorType>(x:X)-> Self;
+
+    fn reduce_sum(chunk: &[Self])->Self;
+
+    fn vec_silu(n: usize, y: &mut [Self], x: &[Self]);
+
+    fn vec_scale(n: usize, y: &mut [Self], v: Self);
+
+    fn softmax(nc: usize, dp: &mut [Self], sp: &[Self]);
+
+    fn rms_norm(ne00: usize, x: &[Self], y: &mut [Self], eps: f32) ;
+
+    fn vec_add(inp1: &[Self], inp2: &[Self], dst: &mut [Self]);
+
+    fn vec_mul(inp1: &[Self], inp2: &[Self], dst: &mut [Self]);
 
 }
 
