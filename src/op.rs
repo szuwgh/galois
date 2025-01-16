@@ -1,19 +1,26 @@
+use crate::cuda::CudaMap;
+use crate::cuda::CudaMap2;
+use crate::cuda::CudaMatMul;
+use crate::cuda::CudaRmsNorm;
+use crate::error::GResult;
+use crate::ggml_quants::QuantType;
+use crate::CpuStorageView;
+use crate::GError;
+use crate::Storage;
+use crate::StorageProto;
+use crate::StorageView;
+use crate::TensorProto;
 use core::time;
 use std::cell::UnsafeCell;
 use std::cmp::min;
 use std::collections::VecDeque;
-use std::ops::Neg;
-
-use crate::error::GResult;
-use crate::ggml_quants::QuantType;
-use crate::Device;
-use crate::GError;
 use std::f32::INFINITY;
+use std::ops::Neg;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 //use super::broadcast::{broadcasting_binary_op, general_broadcasting};
 use crate::ggml_quants::BlockQ4_0;
-use crate::CpuDevice;
+use crate::CpuStorageSlice;
 use crate::Dim;
 use crate::Tensor;
 use crate::TensorType;
@@ -38,7 +45,8 @@ const EPR: usize = 8;
 const ARR: usize = STEP / EPR;
 
 lazy_static! {
-    pub(crate) static ref GLOBAL_CPU_DEVICE_CACHE: CpuDeviceCache = CpuDeviceCache::new();
+    pub(crate) static ref GLOBAL_CPU_DEVICE_CACHE: CpuStorageSliceCache =
+        CpuStorageSliceCache::new();
 }
 
 #[inline]
@@ -180,17 +188,17 @@ pub(crate) unsafe fn vec_dot_f16(x: *const f16, y: *const f16, c: *mut f32, k: u
     *c = sumf;
 }
 
-unsafe impl Sync for CpuDeviceCache {}
+unsafe impl Sync for CpuStorageSliceCache {}
 
-pub(crate) struct CpuDeviceCache {
+pub(crate) struct CpuStorageSliceCache {
     gelu_cache: OnceCell<Vec<f16>>,
     exp_cache: OnceCell<Vec<f16>>,
     silu_cache: OnceCell<Vec<f16>>,
 }
 
-impl CpuDeviceCache {
-    fn new() -> CpuDeviceCache {
-        CpuDeviceCache {
+impl CpuStorageSliceCache {
+    fn new() -> CpuStorageSliceCache {
+        CpuStorageSliceCache {
             gelu_cache: OnceCell::from(Self::init_gelu_cache()),
             exp_cache: OnceCell::from(Self::init_exp_cache()),
             silu_cache: OnceCell::from(Self::init_silu_cache()),
@@ -435,102 +443,13 @@ impl Map2 for Add {
     ) -> GResult<()> {
         todo!()
     }
-    fn f_x_y_x<X, Y>(
-        &self,
-        inp: &[X],
-        inp_d: &Dim,
-        k: &[Y],
-        k_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
-
-    // fn f_f32(
+    // fn f_x_y_x<X, Y>(
     //     &self,
-    //     inp0: &[f32],
-    //     inp0_d: &Dim,
-    //     inp1: &[f32],
-    //     inp1_d: &Dim,
-    //     dst: &mut [f32],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     assert!(is_same_shape(inp0_d.shape(), dst_d.shape()));
-
-    //     let ith: usize = 0;
-    //     let nth: usize = 1;
-
-    //     let nr = inp0_d.nrows();
-    //     let nc = inp0_d.dim1();
-
-    //     let (ne00, ne01, ne02, ne03) = inp0_d.dim4();
-    //     let (ne10, ne11, ne12, ne13) = inp1_d.dim4();
-
-    //     // let (ne0, ne1, ne2, ne3) = dst_d.dim4();
-
-    //     let (nb00, nb01, nb02, nb03) = inp0_d.stride_4d();
-    //     let (nb10, nb11, nb12, nb13) = inp1_d.stride_4d();
-    //     let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
-
-    //     assert!(nb0 == 1);
-    //     assert!(nb00 == 1);
-
-    //     // rows per thread
-    //     let dr = (nr + nth - 1) / nth;
-
-    //     // row range for this thread
-    //     let ir0 = dr * ith;
-    //     let ir1 = min(ir0 + dr, nr);
-
-    //     if nb10 == 1 {
-    //         for ir in ir0..ir1 {
-    //             let i03 = ir / (ne02 * ne01);
-    //             let i02 = (ir - i03 * ne02 * ne01) / ne01;
-    //             let i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
-
-    //             let i13 = i03 % ne13;
-    //             let i12 = i02 % ne12;
-    //             let i11 = i01 % ne11;
-
-    //             let dst_pos = i03 * nb3 + i02 * nb2 + i01 * nb1;
-    //             let src0_pos = i03 * nb03 + i02 * nb02 + i01 * nb01;
-    //             let src1_pos = i13 * nb13 + i12 * nb12 + i11 * nb11;
-
-    //             let dst_ptr = &mut dst[dst_pos..dst_pos + ne00];
-    //             let src0_ptr = &inp0[src0_pos..src0_pos + ne00];
-    //             let src1_ptr = &inp1[src1_pos..src1_pos + ne00];
-
-    //             simd_vec_add_f32(src0_ptr, src1_ptr, dst_ptr);
-    //         }
-    //     } else {
-    //         // for j in 0..n {
-    //         //     let dst_ptr = &mut dst[j * nb1..];
-    //         //     let src0_ptr = &inp1[j * nb01..];
-    //         //     for i in 0..nc {
-    //         //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
-    //         //     }
-    //         // }
-    //         println!("不连续");
-
-    //         dst.par_chunks_mut(nb1)
-    //             .enumerate()
-    //             .for_each(|(j, dst_ptr)| {
-    //                 let src0_ptr = &inp0[j * nb01..];
-    //                 for i in 0..nc {
-    //                     dst_ptr[i] = src0_ptr[i] + inp1[j * nb11 + i * nb10];
-    //                 }
-    //             });
-    //     }
-
-    //  Ok(())
-    // fn f_quant_f32<T: QuantType>(
-    //     &self,
-    //     inp1: &[T],
-    //     inp1_d: &Dim,
-    //     inp2: &[f32],
-    //     inp2_d: &Dim,
-    //     dst: &mut [f32],
+    //     inp: &[X],
+    //     inp_d: &Dim,
+    //     k: &[Y],
+    //     k_d: &Dim,
+    //     dst: &mut [X],
     //     dst_d: &Dim,
     // ) -> GResult<()> {
     //     todo!()
@@ -671,150 +590,13 @@ impl Map2 for Mul {
         todo!()
     }
 
-    fn f_x_y_x<X: TensorType, Y: TensorType>(
-        &self,
-        inp0: &[X],
-        inp0_d: &Dim,
-        inp1: &[Y],
-        inp1_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
-
-    // fn f_quant_num<T: QuantType, X>(
+    // fn f_x_y_x<X: TensorType, Y: TensorType>(
     //     &self,
-    //     inp1: &[T],
+    //     inp0: &[X],
+    //     inp0_d: &Dim,
+    //     inp1: &[Y],
     //     inp1_d: &Dim,
-    //     inp2: &[X],
-    //     inp2_d: &Dim,
     //     dst: &mut [X],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-
-    // fn f_x_y_x<X, Y>(
-    //     &self,
-    //     inp: &[X],
-    //     inp_d: &Dim,
-    //     k: &[Y],
-    //     k_d: &Dim,
-    //     dst: &mut [X],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-
-    // fn f_quant_num2<T: QuantType, X, Y>(
-    //     &self,
-    //     inp1: &[T],
-    //     inp1_d: &Dim,
-    //     inp2: &[X],
-    //     inp2_d: &Dim,
-    //     dst: &mut [Y],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-
-    // fn f_f32(
-    //     &self,
-    //     inp1: &[f32],
-    //     inp1_d: &Dim,
-    //     inp2: &[f32],
-    //     inp2_d: &Dim,
-    //     dst: &mut [f32],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     println!(
-    //         "{:?},{:?},{:?}",
-    //         inp1_d.shape(),
-    //         inp2_d.shape(),
-    //         dst_d.shape()
-    //     );
-    //     assert!(
-    //         // is_same_shape(inp1_d.shape(), inp2_d.shape())
-    //         is_same_shape(inp1_d.shape(), dst_d.shape())
-    //     );
-    //     let time1 = SystemTime::now()
-    //         .duration_since(UNIX_EPOCH)
-    //         .unwrap()
-    //         .as_millis();
-    //     let n = inp1_d.nrows();
-    //     let nc = inp1_d.dim1();
-
-    //     // let nb00 = inp1_d.stride_1d();
-
-    //     // let nb10 = inp2_d.stride_1d();
-
-    //     // let nb0 = dst_d.stride_1d();
-
-    //     let (ne00, ne01, ne02, ne03) = inp1_d.dim4();
-    //     let (ne10, ne11, ne12, ne13) = inp2_d.dim4();
-
-    //     let (nb00, nb01, nb02, nb03) = inp1_d.stride_4d();
-
-    //     let (nb10, nb11, nb12, nb13) = inp2_d.stride_4d();
-
-    //     let (nb0, nb1, nb2, nb3) = dst_d.stride_4d();
-    //     let nr = ne01 * ne02 * ne03;
-    //     assert!(nb00 == 1);
-    //     assert!(nb10 == 1);
-    //     assert!(nb0 == 1);
-    //     let ith: usize = 0;
-    //     let nth: usize = 1;
-    //     // simd_vec_mul_f32(inp1, inp2, dst);
-    //     if nb10 == 1 {
-    //         for ir in 0..nr {
-    //             let i03 = ir / (ne02 * ne01);
-    //             let i02 = (ir - i03 * ne02 * ne01) / ne01;
-    //             let i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
-
-    //             let i13 = i03 % ne13;
-    //             let i12 = i02 % ne12;
-    //             let i11 = i01 % ne11;
-
-    //             let dst_ptr = &mut dst[i03 * nb3 + i02 * nb2 + i01 * nb1..];
-    //             let src0_ptr = &inp1[i03 * nb03 + i02 * nb02 + i01 * nb01..];
-    //             let src1_ptr = &inp2[i13 * nb13 + i12 * nb12 + i11 * nb11..];
-
-    //             simd_vec_mul_f32(src0_ptr, src1_ptr, dst_ptr);
-    //         }
-    //     } else {
-    //         // for j in 0..n {
-    //         //     let dst_ptr = &mut dst[j * nb1..];
-    //         //     let src0_ptr = &inp1[j * nb01..];
-    //         //     for i in 0..nc {
-    //         //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
-    //         //     }
-    //         // }
-
-    //         // dst.par_chunks_mut(nb1)
-    //         //     .enumerate()
-    //         //     .for_each(|(j, dst_ptr)| {
-    //         //         let src0_ptr = &inp1[j * nb01..];
-    //         //         for i in 0..nc {
-    //         //             dst_ptr[i] = src0_ptr[i] * inp2[j * nb11 + i * nb10];
-    //         //         }
-    //         //     });
-    //     }
-    //     let time2 = SystemTime::now()
-    //         .duration_since(UNIX_EPOCH)
-    //         .unwrap()
-    //         .as_millis();
-    //     println!("{} time:{} ms", Self::OP, time2 - time1);
-    //     Ok(())
-    // }
-
-    // fn f_quant_f32<T: QuantType>(
-    //     &self,
-    //     inp1: &[T],
-    //     inp1_d: &Dim,
-    //     inp2: &[f32],
-    //     inp2_d: &Dim,
-    //     dst: &mut [f32],
     //     dst_d: &Dim,
     // ) -> GResult<()> {
     //     todo!()
@@ -914,17 +696,17 @@ impl Map2 for Conv1D1S {
     //     todo!()
     // }
 
-    fn f_x_y_x<X, Y>(
-        &self,
-        inp: &[X],
-        inp_d: &Dim,
-        k: &[Y],
-        k_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_x_y_x<X, Y>(
+    //     &self,
+    //     inp: &[X],
+    //     inp_d: &Dim,
+    //     k: &[Y],
+    //     k_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     // fn f_quant_num2<T: QuantType, X, Y>(
     //     &self,
@@ -1121,17 +903,17 @@ impl Map2 for Conv1D2S {
         todo!()
     }
 
-    fn f_x_y_x<X: TensorType, Y: TensorType>(
-        &self,
-        inp0: &[X],
-        inp0_d: &Dim,
-        inp1: &[Y],
-        inp1_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_x_y_x<X: TensorType, Y: TensorType>(
+    //     &self,
+    //     inp0: &[X],
+    //     inp0_d: &Dim,
+    //     inp1: &[Y],
+    //     inp1_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
     // fn f_quant_num<T: QuantType, X>(
     //     &self,
     //     inp1: &[T],
@@ -1579,17 +1361,17 @@ impl Map2 for MatMul {
     //     todo!()
     // }
 
-    fn f_x_y_x<X, Y>(
-        &self,
-        inp: &[X],
-        inp_d: &Dim,
-        k: &[Y],
-        k_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_x_y_x<X, Y>(
+    //     &self,
+    //     inp: &[X],
+    //     inp_d: &Dim,
+    //     k: &[Y],
+    //     k_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
 
     fn f_q_f32_f32<T: QuantType>(
         &self,
@@ -2577,17 +2359,17 @@ impl Map2 for Scale {
         todo!()
     }
 
-    fn f_x_y_x<X: TensorType, Y: TensorType>(
-        &self,
-        inp0: &[X],
-        inp0_d: &Dim,
-        inp1: &[Y],
-        inp1_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
-    }
+    // fn f_x_y_x<X: TensorType, Y: TensorType>(
+    //     &self,
+    //     inp0: &[X],
+    //     inp0_d: &Dim,
+    //     inp1: &[Y],
+    //     inp1_d: &Dim,
+    //     dst: &mut [X],
+    //     dst_d: &Dim,
+    // ) -> GResult<()> {
+    //     todo!()
+    // }
     // fn f_quant_num<T: QuantType, X>(
     //     &self,
     //     inp1: &[T],
@@ -2826,18 +2608,6 @@ impl Map2 for GetRows {
             )
         }
         Ok(())
-    }
-
-    fn f_x_y_x<X, Y>(
-        &self,
-        inp: &[X],
-        inp_d: &Dim,
-        k: &[Y],
-        k_d: &Dim,
-        dst: &mut [X],
-        dst_d: &Dim,
-    ) -> GResult<()> {
-        todo!()
     }
 
     // fn f_quant_num2<T: QuantType, X, Y>(
@@ -3301,11 +3071,11 @@ impl Map for SoftMax {
     // }
 }
 
-pub fn galois_conv_1d_1s(kernel: &Tensor, src: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (kernel.device(), src.device(), dst_device) {
-        (Device::Cpu(k), Device::Cpu(s), Device::Cpu(d)) => {
-            Conv1D1S.map(k, kernel.dim(), s, src.dim(), d, dst_dim)?;
+pub fn galois_conv_1d_1s<T: TensorProto>(kernel: &T, src: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (kernel.storage().view(), src.storage().view(), dst_device) {
+        (StorageView::Cpu(k), StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
+            Conv1D1S.map(k, kernel.dim(), s, src.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3314,11 +3084,11 @@ pub fn galois_conv_1d_1s(kernel: &Tensor, src: &Tensor, dst: &mut Tensor) -> GRe
     Ok(())
 }
 
-pub fn galois_conv_1d_2s(kernel: &Tensor, src: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (kernel.device(), src.device(), dst_device) {
-        (Device::Cpu(k), Device::Cpu(s), Device::Cpu(d)) => {
-            Conv1D2S.map(k, kernel.dim(), s, src.dim(), d, dst_dim)?;
+pub fn galois_conv_1d_2s<T: TensorProto>(kernel: &T, src: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (kernel.storage().view(), src.storage().view(), dst_device) {
+        (StorageView::Cpu(k), StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
+            Conv1D2S.map(k, kernel.dim(), s, src.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3327,11 +3097,11 @@ pub fn galois_conv_1d_2s(kernel: &Tensor, src: &Tensor, dst: &mut Tensor) -> GRe
     Ok(())
 }
 
-pub fn galois_repeat(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(d)) => {
-            Repeat.map(s, src.dim(), d, dst_dim)?;
+pub fn galois_repeat<T: TensorProto>(src: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src.storage().view(), dst_device) {
+        (StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
+            Repeat.map(s, src.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3340,11 +3110,11 @@ pub fn galois_repeat(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_add(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (a.device(), b.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(k), Device::Cpu(d)) => {
-            Add.map(s, a.dim(), k, b.dim(), d, dst_dim)?;
+pub fn galois_add<T: TensorProto>(a: &T, b: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (a.storage().view(), b.storage().view(), dst_device) {
+        (StorageView::Cpu(s), StorageView::Cpu(k), StorageView::Cpu(mut d)) => {
+            Add.map(s, a.dim(), k, b.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3353,11 +3123,14 @@ pub fn galois_add(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_matmul(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (a.device(), b.device(), dst_device) {
-        (Device::Cpu(a1), Device::Cpu(b1), Device::Cpu(d)) => {
-            MatMul.map(a1, a.dim(), b1, b.dim(), d, dst_dim)?;
+pub fn galois_matmul<T: TensorProto>(a: &T, b: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (a.storage().view(), b.storage().view(), dst_device) {
+        (StorageView::Cpu(a1), StorageView::Cpu(b1), StorageView::Cpu(mut d)) => {
+            MatMul.map(a1, a.dim(), b1, &mut b.dim(), &mut d, dst_dim)?;
+        }
+        (StorageView::Gpu(s0), StorageView::Gpu(s1), StorageView::Gpu(mut d)) => {
+            CudaMatMul.map(s0, a.dim(), s1, b.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3366,11 +3139,11 @@ pub fn galois_matmul(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_mul(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (a.device(), b.device(), dst_device) {
-        (Device::Cpu(a1), Device::Cpu(b1), Device::Cpu(d)) => {
-            Mul.map(a1, a.dim(), b1, b.dim(), d, dst_dim)?;
+pub fn galois_mul<T: TensorProto>(a: &T, b: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (a.storage().view(), b.storage().view(), dst_device) {
+        (StorageView::Cpu(a1), StorageView::Cpu(b1), StorageView::Cpu(mut d)) => {
+            Mul.map(a1, a.dim(), b1, b.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3379,11 +3152,11 @@ pub fn galois_mul(a: &Tensor, b: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_gelu(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(d)) => {
-            Gelu.map(s, src.dim(), d, dst_dim)?;
+pub fn galois_gelu<T: TensorProto>(src: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src.storage().view(), dst_device) {
+        (StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
+            Gelu.map(s, src.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3394,7 +3167,7 @@ pub fn galois_gelu(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
 
 // pub fn galois_norm(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
 //     let (dst_device, dst_dim) = dst.device_dim();
-//     match (src.device(), dst_device) {
+//     match (src.storage(), dst_device) {
 //         (Device::Cpu(s), Device::Cpu(d)) => {
 //             Norm.map(s, src.dim(), d, dst_dim)?;
 //         }
@@ -3405,11 +3178,14 @@ pub fn galois_gelu(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
 //     Ok(())
 // }
 
-pub fn galois_rms_norm(src: &Tensor, dst: &mut Tensor, eps: f32) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(d)) => {
-            RmsNorm { eps }.map(s, src.dim(), d, dst_dim)?;
+pub fn galois_rms_norm<T: TensorProto>(src: &T, dst: &mut T, eps: f32) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src.storage().view(), dst_device) {
+        (StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
+            RmsNorm { eps }.map(s, src.dim(), &mut d, dst_dim)?;
+        }
+        (StorageView::Gpu(s), StorageView::Gpu(mut d)) => {
+            CudaRmsNorm { eps }.map(s, src.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3418,11 +3194,11 @@ pub fn galois_rms_norm(src: &Tensor, dst: &mut Tensor, eps: f32) -> GResult<()> 
     Ok(())
 }
 
-pub fn galois_cpy(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(d)) => {
-            Cpy.map(s, src.dim(), d, dst_dim)?;
+pub fn galois_cpy<T: TensorProto>(src: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src.storage().view(), dst_device) {
+        (StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
+            Cpy.map(s, src.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3431,11 +3207,11 @@ pub fn galois_cpy(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_cont(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(d)) => {
-            Cpy.map(s, src.dim(), d, dst_dim)?;
+pub fn galois_cont<T: TensorProto>(src: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src.storage().view(), dst_device) {
+        (StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
+            Cpy.map(s, src.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3446,7 +3222,7 @@ pub fn galois_cont(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
 
 // pub fn galois_flash_attn(Q: &Tensor, K: &Tensor, V: &Tensor, dst: &mut Tensor) -> GResult<()> {
 //     let (dst_device, dst_dim) = dst.device_dim();
-//     match (Q.device(), K.device(), V.device(), dst_device) {
+//     match (Q.storage(), K.storage(), V.storage(), dst_device) {
 //         (Device::Cpu(q), Device::Cpu(k), Device::Cpu(v), Device::Cpu(d)) => {
 //             FlashAttn.map(q, Q.dim(), k, K.dim(), v, V.dim(), d, dst_dim)?;
 //         }
@@ -3457,11 +3233,11 @@ pub fn galois_cont(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
 //     Ok(())
 // }
 
-pub fn galois_soft_max(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(d)) => {
-            SoftMax.map(s, src.dim(), d, dst_dim)?;
+pub fn galois_soft_max<T: TensorProto>(src: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src.storage().view(), dst_device) {
+        (StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
+            SoftMax.map(s, src.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3470,12 +3246,12 @@ pub fn galois_soft_max(src: &Tensor, dst: &mut Tensor) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_unary(src: &Tensor, dst: &mut Tensor, op: UnaryOp) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src.device(), dst_device) {
-        (Device::Cpu(s), Device::Cpu(d)) => match op {
+pub fn galois_unary<T: TensorProto>(src: &T, dst: &mut T, op: UnaryOp) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src.storage().view(), dst_device) {
+        (StorageView::Cpu(s), StorageView::Cpu(mut d)) => match op {
             UnaryOp::Silu => {
-                Silu.map(s, src.dim(), d, dst_dim)?;
+                Silu.map(s, src.dim(), &mut d, dst_dim)?;
             }
             _ => {
                 todo!()
@@ -3488,11 +3264,11 @@ pub fn galois_unary(src: &Tensor, dst: &mut Tensor, op: UnaryOp) -> GResult<()> 
     Ok(())
 }
 
-pub fn galois_scale(src0: &Tensor, src1: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src0.device(), src1.device(), dst_device) {
-        (Device::Cpu(s0), Device::Cpu(s1), Device::Cpu(d)) => {
-            Scale.map(s0, src0.dim(), s1, src1.dim(), d, dst_dim)?;
+pub fn galois_scale<T: TensorProto>(src0: &T, src1: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src0.storage().view(), src1.storage().view(), dst_device) {
+        (StorageView::Cpu(s0), StorageView::Cpu(s1), StorageView::Cpu(mut d)) => {
+            Scale.map(s0, src0.dim(), s1, src1.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3501,11 +3277,11 @@ pub fn galois_scale(src0: &Tensor, src1: &Tensor, dst: &mut Tensor) -> GResult<(
     Ok(())
 }
 
-pub fn galois_get_rows(src0: &Tensor, src1: &Tensor, dst: &mut Tensor) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src0.device(), src1.device(), dst_device) {
-        (Device::Cpu(s0), Device::Cpu(s1), Device::Cpu(d)) => {
-            GetRows.map(s0, src0.dim(), s1, src1.dim(), d, dst_dim)?;
+pub fn galois_get_rows<T: TensorProto>(src0: &T, src1: &T, dst: &mut T) -> GResult<()> {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src0.storage().view(), src1.storage().view(), dst_device) {
+        (StorageView::Cpu(s0), StorageView::Cpu(s1), StorageView::Cpu(mut d)) => {
+            GetRows.map(s0, src0.dim(), s1, src1.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3524,15 +3300,15 @@ pub struct RopeCustomOption {
     pub xpos_down: bool,
 }
 
-pub fn galois_rope_custom(
+pub fn galois_rope_custom<T: TensorProto>(
     op: RopeCustomOption,
-    src0: &Tensor,
-    src1: &Tensor,
-    dst: &mut Tensor,
+    src0: &T,
+    src1: &T,
+    dst: &mut T,
 ) -> GResult<()> {
-    let (dst_device, dst_dim) = dst.device_dim();
-    match (src0.device(), src1.device(), dst_device) {
-        (Device::Cpu(s0), Device::Cpu(s1), Device::Cpu(d)) => {
+    let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
+    match (src0.storage().view(), src1.storage().view(), dst_device) {
+        (StorageView::Cpu(s0), StorageView::Cpu(s1), StorageView::Cpu(mut d)) => {
             RopeCustom {
                 n_dims: op.n_dims,
                 mode: op.mode,
@@ -3542,7 +3318,7 @@ pub fn galois_rope_custom(
                 xpos_base: op.xpos_base,
                 xpos_down: op.xpos_down,
             }
-            .map(s0, src0.dim(), s1, src1.dim(), d, dst_dim)?;
+            .map(s0, src0.dim(), s1, src1.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3567,15 +3343,21 @@ trait Map {
 
     //fn f_f32_f16(&self, inp: &[f32], inp_d: &Dim, dst: &mut [f16], dst_d: &Dim) -> GResult<()>;
 
-    fn map(&self, dev1: &CpuDevice, d1: &Dim, dst: &mut CpuDevice, d3: &Dim) -> GResult<()> {
+    fn map(
+        &self,
+        dev1: CpuStorageView,
+        d1: &Dim,
+        dst: &mut CpuStorageView,
+        d3: &Dim,
+    ) -> GResult<()> {
         match (dev1, dst) {
-            (CpuDevice::F16(v1), CpuDevice::F16(d)) => {
+            (CpuStorageView::F16(v1), CpuStorageView::F16(d)) => {
                 self.f(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
-            (CpuDevice::F32(v1), CpuDevice::F32(d)) => {
+            (CpuStorageView::F32(v1), CpuStorageView::F32(d)) => {
                 self.f(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
-            (CpuDevice::F32(v1), CpuDevice::F16(d)) => {
+            (CpuStorageView::F32(v1), CpuStorageView::F16(d)) => {
                 self.f_x_y(v1.as_slice(), d1, d.as_slice_mut(), d3)
             }
             _ => {
@@ -3607,7 +3389,9 @@ trait Map2 {
         inp1_d: &Dim,
         dst: &mut [X],
         dst_d: &Dim,
-    ) -> GResult<()>;
+    ) -> GResult<()> {
+        todo!()
+    }
 
     fn f_q_f32_f32<T: QuantType + TensorType>(
         &self,
@@ -3629,93 +3413,35 @@ trait Map2 {
         dst_d: &Dim,
     ) -> GResult<()>;
 
-    // fn f_quant_f32<T: QuantType + TensorType>(
-    //     &self,
-    //     inp1: &[T],
-    //     inp1_d: &Dim,
-    //     inp2: &[f32],
-    //     inp2_d: &Dim,
-    //     dst: &mut [f32],
-    //     dst_d: &Dim,
-    // ) -> GResult<()>;
-
-    // fn f_f32(
-    //     &self,
-    //     inp: &[f32],
-    //     inp_d: &Dim,
-    //     k: &[f32],
-    //     k_d: &Dim,
-    //     dst: &mut [f32],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     self.f(inp, inp_d, k, k_d, dst, dst_d)
-    // }
-
-    // fn f_Q40_I32_f32(
-    //     &self,
-    //     inp0: &[BlockQ4_0],
-    //     inp0_d: &Dim,
-    //     inp1: &[i32],
-    //     inp1_d: &Dim,
-    //     dst: &mut [f32],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-
-    // fn f_Q4_0_f32(
-    //     &self,
-    //     inp0: &[BlockQ4_0],
-    //     inp0_d: &Dim,
-    //     inp1: &[f32],
-    //     inp1_d: &Dim,
-    //     dst: &mut [f32],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-
-    // fn f_f16_f32(
-    //     &self,
-    //     k: &[f16],
-    //     k_d: &Dim,
-    //     inp: &[f32],
-    //     inp_d: &Dim,
-    //     dst: &mut [f32],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-
     fn map(
         &self,
-        dev1: &CpuDevice,
+        dev1: CpuStorageView,
         d1: &Dim,
-        dev2: &CpuDevice,
+        dev2: CpuStorageView,
         d2: &Dim,
-        dst: &mut CpuDevice,
+        dst: &mut CpuStorageView,
         d3: &Dim,
     ) -> GResult<()> {
         match (dev1, dev2, dst) {
-            (CpuDevice::F16(v1), CpuDevice::F16(v2), CpuDevice::F16(d)) => {
+            (CpuStorageView::F16(v1), CpuStorageView::F16(v2), CpuStorageView::F16(d)) => {
                 self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
-            (CpuDevice::F32(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+            (CpuStorageView::F32(v1), CpuStorageView::F32(v2), CpuStorageView::F32(d)) => {
                 self.f(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
-            (CpuDevice::F16(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+            (CpuStorageView::F16(v1), CpuStorageView::F32(v2), CpuStorageView::F32(d)) => {
                 self.f_q_f32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
-            (CpuDevice::Q4_0(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
+            (CpuStorageView::Q4_0(v1), CpuStorageView::I32(v2), CpuStorageView::F32(d)) => {
                 self.f_q_x_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
-            (CpuDevice::Q4_0(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+            (CpuStorageView::Q4_0(v1), CpuStorageView::F32(v2), CpuStorageView::F32(d)) => {
                 self.f_q_f32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
-            (CpuDevice::Q6K(v1), CpuDevice::F32(v2), CpuDevice::F32(d)) => {
+            (CpuStorageView::Q6K(v1), CpuStorageView::F32(v2), CpuStorageView::F32(d)) => {
                 self.f_q_f32_f32(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
-            (CpuDevice::F32(v1), CpuDevice::I32(v2), CpuDevice::F32(d)) => {
+            (CpuStorageView::F32(v1), CpuStorageView::I32(v2), CpuStorageView::F32(d)) => {
                 self.f_x_y_x(v1.as_slice(), d1, v2.as_slice(), d2, d.as_slice_mut(), d3)
             }
             _ => {
@@ -3745,17 +3471,17 @@ trait Map2 {
 
 //     fn map(
 //         &self,
-//         dev1: &CpuDevice,
+//         dev1: &CpuStorageSlice,
 //         d1: &Dim,
-//         dev2: &CpuDevice,
+//         dev2: &CpuStorageSlice,
 //         d2: &Dim,
-//         dev3: &CpuDevice,
+//         dev3: &CpuStorageSlice,
 //         d3: &Dim,
-//         dst: &mut CpuDevice,
+//         dst: &mut CpuStorageSlice,
 //         d4: &Dim,
 //     ) -> GResult<()> {
 //         match (dev1, dev2, dev3, dst) {
-//             (CpuDevice::F16(v1), CpuDevice::F16(v2), CpuDevice::F16(v3), CpuDevice::F32(d)) => self
+//             (CpuStorageSlice::F16(v1), CpuStorageSlice::F16(v2), CpuStorageSlice::F16(v3), CpuStorageSlice::F32(d)) => self
 //                 .f_f16_f16_f16_f32(
 //                     v1.as_slice(),
 //                     d1,
@@ -3778,6 +3504,7 @@ mod tests {
     use half::vec;
 
     use super::*;
+    use crate::Device;
     use crate::Shape;
     //  [[ F32(7.0), F32(10.0), F32(14.0)],
     //  [ F32(15.0), F32(22.0), F32(32.0)],
@@ -3796,8 +3523,13 @@ mod tests {
     */
     #[test]
     fn test_matmul_f32() {
-        let a = Tensor::mat_slice(&[[1.0f32, 3.0, 5.0], [7.0f32, 9.0, 11.0]]);
-        let b = Tensor::mat_slice(&[[2.0f32, 4.0], [6.0f32, 8.0], [10.0f32, 12.0]]);
+        let a =
+            Tensor::mat_slice(&[[1.0f32, 3.0, 5.0], [7.0f32, 9.0, 11.0]], &Device::Cpu).unwrap();
+        let b = Tensor::mat_slice(
+            &[[2.0f32, 4.0], [6.0f32, 8.0], [10.0f32, 12.0]],
+            &Device::Cpu,
+        )
+        .unwrap();
         println!("a{:?}", a.shape());
         println!("b{:?}", b.shape());
         // let ne = [
@@ -3808,11 +3540,11 @@ mod tests {
         // ];
         //println!("{:?}", ne);
         let v = vec![0.0f32; 15];
-        let mut d = Tensor::from_vec(v, 2, Shape::from_array([2, 2]));
+        let mut d = Tensor::from_vec(v, 2, Shape::from_array([2, 2]), &Device::Cpu).unwrap();
         // MatMul.map(
-        //     &m1.device(),
+        //     &m1.storage(),
         //     &m1.dim,
-        //     m2.device(),
+        //     m2.storage(),
         //     &m2.dim,
         //     d.device_mut(),
         //     &d.dim,
@@ -3869,7 +3601,9 @@ mod tests {
             ],
             2,
             Shape::from_array([3, 2]),
-        );
+            &Device::Cpu,
+        )
+        .unwrap();
 
         // let mut m2 = Tensor::from_vec(
         //     vec![2.0f32, 6.0, 10.0, 4.0, 8.0, 12.0],
@@ -3881,7 +3615,9 @@ mod tests {
             vec![2.0f32, 4.0, 6.0, 8.0, 10.0, 12.0],
             2,
             Shape::from_array([2, 3]),
-        );
+            &Device::Cpu,
+        )
+        .unwrap();
 
         println!("m1:{:?}", m1);
         println!("m2:{:?}", m2);
@@ -3889,11 +3625,11 @@ mod tests {
         //  let m2 = mat(&[[1.0f32, 2.0, 4.0], [3.0f32, 5.0, 6.0]]);
 
         let v = vec![0.0f32; 15];
-        let mut d = Tensor::from_vec(v, 2, Shape::from_array([2, 2]));
+        let mut d = Tensor::from_vec(v, 2, Shape::from_array([2, 2]), &Device::Cpu).unwrap();
         // MatMul.map(
-        //     &m1.device(),
+        //     &m1.storage(),
         //     &m1.dim,
-        //     m2.device(),
+        //     m2.storage(),
         //     &m2.dim,
         //     d.device_mut(),
         //     &d.dim,

@@ -167,7 +167,8 @@ impl Dim {
                 shape: self.shape.clone(),
                 dim: dim,
                 op: "narrow",
-            });
+            }
+            .into());
         }
         if start + len > dims[dim] {
             return Err(GError::NarrowInvalidArgs {
@@ -176,7 +177,8 @@ impl Dim {
                 start,
                 len,
                 msg: "start + len > dim_len",
-            });
+            }
+            .into());
         }
         let mut dims = dims.to_vec();
         dims[dim] = len;
@@ -194,7 +196,8 @@ impl Dim {
                 expected: usize::max(d1, d1),
                 got: rank,
                 shape: self.shape.clone(),
-            });
+            }
+            .into());
         }
         let mut stride = self.stride.clone();
         let dims = self.shape_mut();

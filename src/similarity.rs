@@ -1,7 +1,8 @@
-use crate::CpuDevice;
-use crate::Device;
+use crate::CpuStorageSlice;
 use crate::GResult;
+use crate::Storage;
 use crate::Tensor;
+use crate::TensorProto;
 use crate::TensorType;
 use core::arch::x86_64::*;
 use std::ops::Sub;
@@ -45,10 +46,12 @@ trait Map {
 
     fn f32(&self, left: &[f32], right: &[f32]) -> f32;
 
-    fn map(&self, left: &CpuDevice, right: &CpuDevice) -> f32 {
+    fn map(&self, left: &CpuStorageSlice, right: &CpuStorageSlice) -> f32 {
         match (left, right) {
-            // (CpuDevice::F16(v1), CpuDevice::F16(d)) => self.f(v1.as_slice(), d.as_slice()),
-            (CpuDevice::F32(v1), CpuDevice::F32(d)) => self.f32(v1.as_slice(), d.as_slice()),
+            // (CpuStorageSlice::F16(v1), CpuStorageSlice::F16(d)) => self.f(v1.as_slice(), d.as_slice()),
+            (CpuStorageSlice::F32(v1), CpuStorageSlice::F32(d)) => {
+                self.f32(v1.as_slice(), d.as_slice())
+            }
             _ => {
                 todo!()
             }
@@ -112,8 +115,8 @@ impl Map for Euclidean {
 
 impl Similarity for Tensor {
     fn euclidean(&self, other: &Self) -> f32 {
-        match (self.device(), other.device()) {
-            (Device::Cpu(a), Device::Cpu(b)) => Euclidean.map(a, b),
+        match (self.storage(), other.storage()) {
+            (Storage::Cpu(a), Storage::Cpu(b)) => Euclidean.map(a, b),
             _ => {
                 todo!()
             }
@@ -135,9 +138,9 @@ impl Similarity for Tensor {
 
 #[cfg(test)]
 mod tests {
-    use crate::Shape;
-
     use super::*;
+    use crate::Device;
+    use crate::Shape;
 
     #[test]
     fn test_euclidean() {
@@ -147,16 +150,20 @@ mod tests {
             ],
             1,
             Shape::from_array([12]),
-        );
-        println!("a{:?}", a);
+            &Device::Cpu,
+        )
+        .unwrap();
+        //println!("a{:?}", a);
         let b = Tensor::from_vec(
             vec![
                 4.0f32, 5.0, 6.0, 4.0f32, 5.0, 6.0, 4.0f32, 5.0, 6.0, 4.0f32, 5.0, 6.0,
             ],
             1,
             Shape::from_array([12]),
-        );
-        println!("a{:?}", b);
+            &Device::Cpu,
+        )
+        .unwrap();
+        // println!("a{:?}", b);
         let d = a.euclidean(&b);
         println!("d:{}", d)
     }

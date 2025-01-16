@@ -2,6 +2,7 @@ use crate::op::vec_dot_f16;
 use crate::{error::GResult, GGmlType};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
+use cudarc::driver::DeviceRepr;
 use half::f16;
 use std::ops::Sub;
 pub const QK4_0: usize = 32;
@@ -106,24 +107,26 @@ impl QuantType for f16 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+unsafe impl DeviceRepr for BlockQ4_0 {}
+
+#[derive(Default, Debug, Clone, PartialEq, Copy)]
 #[repr(C)]
-pub struct BlockQ4_0 {
+pub(crate) struct BlockQ4_0 {
     pub(crate) d: f16,
     pub(crate) qs: [u8; QK4_0 / 2],
 }
 
 impl BlockQ4_0 {
-    pub fn d(&self) -> f16 {
+    pub(crate) fn d(&self) -> f16 {
         self.d
     }
 
-    pub fn qs(&self) -> &[u8] {
+    pub(crate) fn qs(&self) -> &[u8] {
         &self.qs
     }
 
     //  #[cfg(target_feature = "avx")]
-    pub fn vec_dot_q8_0(me: &[Self], other: &[BlockQ8_0]) -> f32 {
+    pub(crate) fn vec_dot_q8_0(me: &[Self], other: &[BlockQ8_0]) -> f32 {
         assert!(me.len() == other.len());
         unsafe {
             let mut acc = _mm256_setzero_ps();
@@ -343,7 +346,7 @@ pub(super) unsafe fn make_qx_quants(
 
 #[derive(Debug, Clone, PartialEq, Copy)]
 #[repr(C)]
-pub struct BlockQ6K {
+pub(crate) struct BlockQ6K {
     pub(crate) ql: [u8; QK_K / 2],
     pub(crate) qh: [u8; QK_K / 4],
     pub(crate) scales: [i8; QK_K / 16],
@@ -519,7 +522,7 @@ impl QuantType for BlockQ6K {
 
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
-pub struct BlockQ8K {
+pub(crate) struct BlockQ8K {
     pub(crate) d: f32,
     pub(crate) qs: [i8; QK_K],
     pub(crate) bsums: [i16; QK_K / 16],

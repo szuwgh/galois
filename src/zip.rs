@@ -74,7 +74,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-
+    use crate::Device;
     #[test] //[3, 2]
     fn test_select_axis() {
         let a = vec![1, 2, 3, 4];
@@ -89,18 +89,24 @@ mod tests {
     }
     #[test] //[3, 2]
     fn test_zip() {
-        let m1 = Tensor::mat_slice(&[
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-            [2.0, 2.0, 2.0],
-            [3.0, 3.0, 3.0],
-        ]);
-        let m2 = Tensor::mat_slice(&[
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-            [2.0, 2.0, 2.0],
-            [3.0, 3.0, 3.0],
-        ]);
+        let m1 = Tensor::mat_slice(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [2.0, 2.0, 2.0],
+                [3.0, 3.0, 3.0],
+            ],
+            &Device::Cpu,
+        );
+        let m2 = Tensor::mat_slice(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [2.0, 2.0, 2.0],
+                [3.0, 3.0, 3.0],
+            ],
+            &Device::Cpu,
+        );
 
         // m1.view()
         //     .iter()

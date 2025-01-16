@@ -1,9 +1,10 @@
 use crate::Dim;
 use crate::Shape;
+use cudarc::cublas::result::CublasError;
+use cudarc::driver::DriverError;
+use std::fmt;
 use std::io;
-use std::io::Error as IOError;
 use thiserror::Error;
-
 #[derive(Error, Debug)]
 pub enum ShapeErrorKind {
     #[error("operands could not be broadcast together")]
@@ -66,34 +67,38 @@ pub enum GError {
         stride: usize,
         msg: &'static str,
     },
+    #[error("cuda error:{0:?}")]
+    CudaDeviceError(DriverError),
+    #[error("cublas error:{0:?}")]
+    CublasError(CublasError),
 }
 
-impl From<&str> for GError {
-    fn from(e: &str) -> Self {
-        GError::Unexpected(e.to_string())
+impl From<DriverError> for GError {
+    fn from(e: DriverError) -> Self {
+        GError::CudaDeviceError(e)
     }
 }
 
-impl From<(&str, io::Error)> for GError {
-    fn from(e: (&str, io::Error)) -> Self {
-        GError::UnexpectIO(e.0.to_string(), e.1)
+impl From<CublasError> for GError {
+    fn from(e: CublasError) -> Self {
+        GError::CublasError(e)
     }
 }
 
-impl From<String> for GError {
-    fn from(e: String) -> Self {
-        GError::Unexpected(e)
-    }
-}
+// impl From<String> for GError {
+//     fn from(e: String) -> Self {
+//         GError::Unexpected(e)
+//     }
+// }
 
-impl From<IOError> for GError {
-    fn from(e: IOError) -> Self {
-        GError::Unexpected(e.to_string())
-    }
-}
+// impl From<IOError> for GError {
+//     fn from(e: IOError) -> Self {
+//         GError::Unexpected(e.to_string())
+//     }
+// }
 
-impl From<GError> for String {
-    fn from(e: GError) -> Self {
-        format!("{}", e)
-    }
-}
+// impl From<GError> for String {
+//     fn from(e: GError) -> Self {
+//         format!("{}", e)
+//     }
+// }
