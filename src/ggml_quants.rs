@@ -3,6 +3,7 @@ use crate::{error::GResult, GGmlType};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 use cudarc::driver::DeviceRepr;
+use cudarc::driver::ValidAsZeroBits;
 use half::f16;
 use std::ops::Sub;
 pub const QK4_0: usize = 32;
@@ -622,6 +623,34 @@ impl QuantType for BlockQ8_0 {
             }
         }
         Ok(())
+    }
+
+    fn to_f32(src: &[Self], dst: &mut [f32]) {
+        todo!()
+    }
+}
+
+unsafe impl ValidAsZeroBits for BlockQ8_1 {}
+unsafe impl DeviceRepr for BlockQ8_1 {}
+
+#[derive(Debug, Clone, PartialEq)]
+#[repr(C)]
+pub struct BlockQ8_1 {
+    pub(crate) d: f16,
+    pub(crate) s: f16,
+    pub(crate) qs: [i8; QK8_1],
+}
+
+impl QuantType for BlockQ8_1 {
+    const BLCK_SIZE: usize = QK8_1;
+    type VecDotType = BlockQ8_0;
+
+    fn from_f32(src: &[f32], dst: &mut [Self]) -> GResult<()> {
+        todo!()
+    }
+
+    fn vec_dot(me: &[Self], other: &[Self::VecDotType]) -> f32 {
+        todo!()
     }
 
     fn to_f32(src: &[Self], dst: &mut [f32]) {

@@ -96,18 +96,31 @@ impl Dim {
         dims1(&self.stride)
     }
 
+    pub fn stride_3(&self) -> usize {
+        self.stride_layout()[3]
+    }
+
+    pub fn stride_2(&self) -> usize {
+        self.stride_layout()[2]
+    }
+
+    pub fn stride_1(&self) -> usize {
+        self.stride_layout()[1]
+    }
+
+    pub fn stride_0(&self) -> usize {
+        self.stride_layout()[0]
+    }
+
     pub fn dim_3(&self) -> usize {
-        //  assert!(self.n_dims() == 4);
         self.shape_layout()[3]
     }
 
     pub fn dim_2(&self) -> usize {
-        // assert!(self.n_dims() >= 3);
         self.shape_layout()[2]
     }
 
     pub fn dim_1(&self) -> usize {
-        // assert!(self.n_dims() >= 2);
         self.shape_layout()[1]
     }
 
@@ -127,14 +140,17 @@ impl Dim {
         self.shape.dims2()
     }
 
+    #[inline]
     pub fn dim1(&self) -> usize {
         self.shape.dims1()
     }
 
+    #[inline]
     pub fn n_dims(&self) -> usize {
         self.n_dims
     }
 
+    #[inline]
     pub fn nrows(&self) -> usize {
         let (_, d1, d2, d3) = self.dim4();
         d1 * d2 * d3
@@ -242,6 +258,12 @@ impl Dim {
             && self.stride[3] == self.stride[2] * self.shape.layout()[2];
     }
 
+    pub fn is_permuted(&self) -> bool {
+        return self.stride[0] > self.stride[1]
+            || self.stride[1] > self.stride[2]
+            || self.stride[2] > self.stride[3];
+    }
+
     pub fn is_scalar(&self) -> bool {
         let (ne0, ne1, ne2, ne3) = self.dim4();
         return ne0 == 1 && ne1 == 1 && ne2 == 1 && ne3 == 1;
@@ -328,6 +350,7 @@ impl Shape {
         dims2(&self.0)
     }
 
+    #[inline]
     pub fn dims1(&self) -> usize {
         dims1(&self.0)
     }

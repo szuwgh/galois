@@ -1,7 +1,10 @@
+use crate::cuda::CudaCpy;
 use crate::cuda::CudaMap;
 use crate::cuda::CudaMap2;
 use crate::cuda::CudaMatMul;
+use crate::cuda::CudaMul;
 use crate::cuda::CudaRmsNorm;
+use crate::cuda::CudaRope;
 use crate::error::GResult;
 use crate::ggml_quants::QuantType;
 use crate::CpuStorageView;
@@ -3123,7 +3126,11 @@ pub fn galois_add<T: TensorProto>(a: &T, b: &T, dst: &mut T) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_matmul<T: TensorProto>(a: &T, b: &T, dst: &mut T) -> GResult<()> {
+pub fn galois_matmul<X: TensorProto, Y: TensorProto, Z: TensorProto>(
+    a: &X,
+    b: &Y,
+    dst: &mut Z,
+) -> GResult<()> {
     let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
     match (a.storage().view(), b.storage().view(), dst_device) {
         (StorageView::Cpu(a1), StorageView::Cpu(b1), StorageView::Cpu(mut d)) => {
@@ -3144,6 +3151,9 @@ pub fn galois_mul<T: TensorProto>(a: &T, b: &T, dst: &mut T) -> GResult<()> {
     match (a.storage().view(), b.storage().view(), dst_device) {
         (StorageView::Cpu(a1), StorageView::Cpu(b1), StorageView::Cpu(mut d)) => {
             Mul.map(a1, a.dim(), b1, b.dim(), &mut d, dst_dim)?;
+        }
+        (StorageView::Gpu(s0), StorageView::Gpu(s1), StorageView::Gpu(mut d)) => {
+            CudaMul.map(s0, a.dim(), s1, b.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3194,11 +3204,14 @@ pub fn galois_rms_norm<T: TensorProto>(src: &T, dst: &mut T, eps: f32) -> GResul
     Ok(())
 }
 
-pub fn galois_cpy<T: TensorProto>(src: &T, dst: &mut T) -> GResult<()> {
+pub fn galois_cpy<X: TensorProto, Y: TensorProto>(src: &X, dst: &mut Y) -> GResult<()> {
     let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
     match (src.storage().view(), dst_device) {
         (StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
             Cpy.map(s, src.dim(), &mut d, dst_dim)?;
+        }
+        (StorageView::Gpu(s), StorageView::Gpu(mut d)) => {
+            CudaCpy.map(s, src.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3300,16 +3313,28 @@ pub struct RopeCustomOption {
     pub xpos_down: bool,
 }
 
-pub fn galois_rope_custom<T: TensorProto>(
+pub fn galois_rope_custom<X: TensorProto, Y: TensorProto, R: TensorProto>(
     op: RopeCustomOption,
-    src0: &T,
-    src1: &T,
-    dst: &mut T,
+    src0: &X,
+    src1: &Y,
+    dst: &mut R,
 ) -> GResult<()> {
     let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
     match (src0.storage().view(), src1.storage().view(), dst_device) {
         (StorageView::Cpu(s0), StorageView::Cpu(s1), StorageView::Cpu(mut d)) => {
             RopeCustom {
+                n_dims: op.n_dims,
+                mode: op.mode,
+                n_ctx: op.n_ctx,
+                freq_base: op.freq_base,
+                freq_scale: op.freq_scale,
+                xpos_base: op.xpos_base,
+                xpos_down: op.xpos_down,
+            }
+            .map(s0, src0.dim(), s1, src1.dim(), &mut d, dst_dim)?;
+        }
+        (StorageView::Gpu(s0), StorageView::Gpu(s1), StorageView::Gpu(mut d)) => {
+            CudaRope {
                 n_dims: op.n_dims,
                 mode: op.mode,
                 n_ctx: op.n_ctx,

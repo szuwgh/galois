@@ -2,11 +2,15 @@
 #![feature(non_null_convenience)]
 #![feature(portable_simd)]
 #![feature(slice_as_chunks)]
+
 use crate::ggml_quants::QK_K;
 pub mod cuda;
+#[macro_use]
+pub mod macros; // 导入宏模块
 pub mod error;
 pub mod ggml_quants;
-use crate::cuda::CudaDevice;
+pub mod kernels;
+use crate::cuda::CudaDevice;use crate::cuda::CudaStorageSliceView;
 pub mod op;
 pub mod shape;
 use std::marker::PhantomData;
@@ -43,7 +47,11 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use shape::ShapeIter;
 use std::fmt;
 use std::mem::forget;
+
+
+
 pub type F16 = half::f16;
+
 
 const STEP: usize = 32;
 
@@ -65,6 +73,21 @@ pub trait TensorProto: Sized {
     fn storage_mut<'a>(&'a mut self) -> &'a mut Self::Sto;
 
     fn device(&self) -> &Device;
+
+    fn view_tensor(& self,
+        offset:usize,
+        n_dims: usize,
+        dtype: GGmlType,
+        shape: Shape)-> TensorView<'_> {  
+            let v = self.storage().offset(offset);
+            let stride = shape.ggml_stride(dtype);
+           TensorView {
+            dtype,
+            data: v,
+            dim:   Dim { n_dims: n_dims, shape:shape, stride: stride },
+            device: self.device().clone(),
+           }
+    }
 
     unsafe fn from_bytes(
         v: &[u8],
@@ -814,6 +837,14 @@ pub trait TensorType:
         unsafe { std::mem::MaybeUninit::zeroed().assume_init() }
     }
 
+    fn byte_size()->usize{
+        GS_TYPE_SIZE[Self::DTYPE as usize]
+    }
+
+    fn blck_size()->usize{
+        GS_BLCK_SIZE[Self::DTYPE as usize]
+    }
+
     fn to_f32(&self)->f32;
 
     fn to_f16(&self)->f16;
@@ -839,6 +870,24 @@ pub trait TensorType:
     fn vec_add(inp1: &[Self], inp2: &[Self], dst: &mut [Self]);
 
     fn vec_mul(inp1: &[Self], inp2: &[Self], dst: &mut [Self]);
+
+    fn is_quantized(&self)->bool{
+        match Self::DTYPE { 
+            GGmlType::Q4_0=>true,
+            GGmlType::Q4_1=>true,
+            GGmlType::Q5_0=>true,
+            GGmlType::Q5_1=>true,
+            GGmlType::Q8_0=>true,
+            GGmlType::Q8_1=>true,
+            GGmlType::Q2K=>true,
+            GGmlType::Q3K=>true,
+            GGmlType::Q4K=>true,
+            GGmlType::Q5K=>true,
+            GGmlType::Q6K =>true,
+            GGmlType::Q8K=>true,  
+            _=>false,
+        }
+    }
 
 }
 
@@ -1664,8 +1713,9 @@ impl<'a> StorageProto for StorageView<'a> {
     fn view(&self) -> StorageView<'a> {
         return match self {
             StorageView::Cpu(v) => StorageView::Cpu(v.clone()),
-            StorageView::Gpu(_) => {
-                todo!()
+            StorageView::Gpu(g) => {
+                StorageView::Gpu(g.offset(0))
+            
             }
         };
     }
@@ -1772,8 +1822,8 @@ impl StorageProto for Storage {
     fn offset<'a>(&'a self, i: usize) -> StorageView<'a> {
         return match self {
             Storage::Cpu(v) => StorageView::Cpu(v.offset(i)),
-            Storage::Gpu(_) => {
-                todo!()
+            Storage::Gpu(g) => {
+                StorageView::Gpu(g.offset(i))
             }
         };
     }
@@ -2008,7 +2058,7 @@ pub struct TensorView<'a> {
     device: Device,
 }
 
-impl<'a> TensorView<'a> {
+impl<'a> TensorView<'a> {  
     fn from_storage(
         data: StorageView<'a>,
         n_dims: usize,
@@ -2033,6 +2083,85 @@ impl<'a> TensorView<'a> {
         let cpu_dev = v.to_cpu_storage();
         TensorView::from_storage(StorageView::Cpu(cpu_dev), n_dims, s, A::DTYPE, dev.clone())
     }
+
+    pub fn to_cuda_tensor(&self, dev: &Device)-> GResult<Tensor> {  
+        match dev {
+            Device::Cpu => {
+                todo!()
+            }
+            Device::Gpu(g) => {
+                let view = self.data.view();
+                match view {
+                    StorageView::Cpu(cpu_stor) => {
+                        let cuda_stor = g.from_cpu_storage_view(cpu_stor)?;
+                       Ok(Tensor{
+                            dtype: self.dtype,
+                            data: Storage::Gpu(cuda_stor),
+                            dim: self.dim.clone(),
+                            dev: dev.clone()
+                        }) 
+                    }
+                    StorageView::Gpu(_) => {
+                        todo!()
+                    }
+
+                }            
+            }
+        }
+  
+    }
+
+
+    pub fn to_cpu_tensor(self) -> GResult<Tensor> {
+        match &self.data {
+            StorageView::Cpu(_) => todo!(),
+            StorageView::Gpu(g) => match g.slice() {
+                CudaStorageSliceView::Q4_0(v) => {
+                    let elem_count = self.dim.elem_count();
+                    let mut cpu_vec = vec![BlockQ4_0::default(); elem_count];
+                    g.device().device.dtoh_sync_copy_into(&v.slice(..elem_count), &mut cpu_vec)?;
+                    Tensor::from_vec(
+                        cpu_vec,
+                        self.n_dims(),
+                        Shape::from_slice(self.shape()),
+                        &Device::Cpu,
+                    )
+                }
+                CudaStorageSliceView::F16(v) => {
+                    let elem_count = self.dim.elem_count();
+                    let mut cpu_vec = vec![f16::zero(); elem_count];
+                    let t = v.try_slice(..elem_count).unwrap();
+                    g.device().device.dtoh_sync_copy_into(&t, &mut cpu_vec).unwrap();
+                    Tensor::from_vec(  
+                        cpu_vec,
+                        self.n_dims(),
+                        Shape::from_slice(self.shape()),
+                        &Device::Cpu,
+                    )
+                }
+                CudaStorageSliceView::F32(v) => {
+                    let mut cpu_vec = vec![0.0f32; self.dim.elem_count()];
+                    g.device().device.dtoh_sync_copy_into(v, &mut cpu_vec)?;
+                    Tensor::from_vec(
+                        cpu_vec,
+                        self.n_dims(),
+                        Shape::from_slice(self.shape()),
+                        &Device::Cpu,
+                    )
+                }
+                CudaStorageSliceView::I32(v) => {
+                    let mut cpu_vec = vec![0; self.dim.elem_count()];
+                    g.device().device.dtoh_sync_copy_into(v, &mut cpu_vec)?;
+                    Tensor::from_vec(
+                        cpu_vec,
+                        self.n_dims(),
+                        Shape::from_slice(self.shape()),
+                        &Device::Cpu,
+                    )
+                }
+            },
+        }
+    }
 }
 
 unsafe impl Send for Tensor {}
@@ -2051,39 +2180,65 @@ impl AsRef<Tensor> for Tensor {
 }
 
 impl Tensor {
-    pub fn to_cpu_tensor(self) -> GResult<Tensor> {
+    pub fn to_cpu_tensor(&self) -> GResult<Tensor> {
         match &self.data {
-            Storage::Cpu(_) => Ok(self),
+            Storage::Cpu(_) => todo!(),
             Storage::Gpu(g) => match g.slice() {
                 CudaStorageSlice::Q4_0(v) => {
-                    let mut cpu_vec = vec![BlockQ4_0::default(); self.dim.elem_count()];
-                    g.device().device.dtoh_sync_copy_into(v, &mut cpu_vec)?;
-                    Tensor::from_vec(
-                        cpu_vec,
-                        self.n_dims(),
-                        Shape::from_slice(self.shape()),
-                        &Device::Cpu,
-                    )
+                    let elem_count = self.dim.elem_count();
+                    let mut cpu_vec = vec![BlockQ4_0::default(); elem_count];
+                    g.device().device.dtoh_sync_copy_into(&v.slice(..elem_count), &mut cpu_vec)?;
+                    let cpu_slice = cpu_vec.to_cpu_storage();
+                  Ok(
+                    Tensor{
+                        dtype: self.dtype(),
+            data: Storage::Cpu(cpu_slice),
+            dim: Dim {n_dims:self.n_dims(),shape:self.dim.shape.clone(),stride:self.dim.stride},
+            dev: Device::Cpu,
+                    }
+                )
                 }
                 CudaStorageSlice::F16(v) => {
-                    let mut cpu_vec = vec![f16::zero(); self.dim.elem_count()];
-                    g.device().device.dtoh_sync_copy_into(v, &mut cpu_vec)?;
-                    Tensor::from_vec(
-                        cpu_vec,
-                        self.n_dims(),
-                        Shape::from_slice(self.shape()),
-                        &Device::Cpu,
-                    )
+                    let elem_count = self.dim.elem_count();
+                    let mut cpu_vec = vec![f16::zero(); elem_count];
+                    g.device().device.dtoh_sync_copy_into(&v.slice(..elem_count), &mut cpu_vec)?;
+                    let cpu_slice = cpu_vec.to_cpu_storage();
+                  Ok(
+                    Tensor{
+                        dtype: self.dtype(),
+                        data: Storage::Cpu(cpu_slice),
+                        dim: Dim {n_dims:self.n_dims(),shape:self.dim.shape.clone(),stride:self.dim.stride},
+                        dev: Device::Cpu,
+                    }
+                )
                 }
                 CudaStorageSlice::F32(v) => {
-                    let mut cpu_vec = vec![0.0f32; self.dim.elem_count()];
-                    g.device().device.dtoh_sync_copy_into(v, &mut cpu_vec)?;
-                    Tensor::from_vec(
-                        cpu_vec,
-                        self.n_dims(),
-                        Shape::from_slice(self.shape()),
-                        &Device::Cpu,
-                    )
+                    let elem_count = self.dim.elem_count();
+                    let mut cpu_vec = vec![0.0f32; elem_count];
+                    g.device().device.dtoh_sync_copy_into(&v.slice(..elem_count), &mut cpu_vec)?;
+                    let cpu_slice = cpu_vec.to_cpu_storage();
+                    Ok(
+                      Tensor{
+                        dtype: self.dtype(),
+                        data: Storage::Cpu(cpu_slice),
+                        dim: Dim {n_dims:self.n_dims(),shape:self.dim.shape.clone(),stride:self.dim.stride},
+                        dev: Device::Cpu,
+                      }
+                  )
+                }
+                CudaStorageSlice::I32(v) => {
+                    let elem_count = self.dim.elem_count();
+                    let mut cpu_vec = vec![0;elem_count];
+                    g.device().device.dtoh_sync_copy_into(&v.slice(..elem_count), &mut cpu_vec)?;
+                    let cpu_slice = cpu_vec.to_cpu_storage();
+                  Ok(
+                    Tensor{
+                        dtype: self.dtype(),
+                        data: Storage::Cpu(cpu_slice),
+                        dim: Dim {n_dims:self.n_dims(),shape:self.dim.shape.clone(),stride:self.dim.stride},
+                        dev: Device::Cpu,
+                    }
+                )
                 }
             },
         }
