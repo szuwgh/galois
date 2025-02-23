@@ -1,9 +1,13 @@
 use crate::CpuStorageSlice;
+use crate::CpuStorageView;
 use crate::GResult;
 use crate::Storage;
+use crate::StorageProto;
+use crate::StorageView;
 use crate::Tensor;
 use crate::TensorProto;
 use crate::TensorType;
+use crate::TensorView;
 use core::arch::x86_64::*;
 use std::ops::Sub;
 trait UnaryOp {
@@ -32,7 +36,7 @@ impl BinaryOp for f32 {
 
 pub trait Similarity {
     // 欧式距离/欧几里得距离
-    fn euclidean(&self, other: &Self) -> f32;
+    fn euclidean<T: TensorProto>(&self, other: &T) -> f32;
     // 曼哈顿距离
     fn manhattan(&self) -> f32;
     // 余弦相似度
@@ -46,10 +50,10 @@ trait Map {
 
     fn f32(&self, left: &[f32], right: &[f32]) -> f32;
 
-    fn map(&self, left: &CpuStorageSlice, right: &CpuStorageSlice) -> f32 {
+    fn map(&self, left: CpuStorageView, right: CpuStorageView) -> f32 {
         match (left, right) {
             // (CpuStorageSlice::F16(v1), CpuStorageSlice::F16(d)) => self.f(v1.as_slice(), d.as_slice()),
-            (CpuStorageSlice::F32(v1), CpuStorageSlice::F32(d)) => {
+            (CpuStorageView::F32(v1), CpuStorageView::F32(d)) => {
                 self.f32(v1.as_slice(), d.as_slice())
             }
             _ => {
@@ -113,10 +117,33 @@ impl Map for Euclidean {
     }
 }
 
+impl<'a> Similarity for TensorView<'a> {
+    fn euclidean<T: TensorProto>(&self, other: &T) -> f32 {
+        match (self.storage().view(), other.storage().view()) {
+            (StorageView::Cpu(a), StorageView::Cpu(b)) => Euclidean.map(a, b),
+            _ => {
+                todo!()
+            }
+        }
+    }
+
+    fn manhattan(&self) -> f32 {
+        todo!()
+    }
+
+    fn cosine(&self) -> f32 {
+        todo!()
+    }
+
+    fn chebyshev(&self) -> f32 {
+        todo!()
+    }
+}
+
 impl Similarity for Tensor {
-    fn euclidean(&self, other: &Self) -> f32 {
-        match (self.storage(), other.storage()) {
-            (Storage::Cpu(a), Storage::Cpu(b)) => Euclidean.map(a, b),
+    fn euclidean<T: TensorProto>(&self, other: &T) -> f32 {
+        match (self.storage().view(), other.storage().view()) {
+            (StorageView::Cpu(a), StorageView::Cpu(b)) => Euclidean.map(a, b),
             _ => {
                 todo!()
             }

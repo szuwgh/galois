@@ -12,5 +12,11 @@ pub fn init_cuda_function(dev: &CudaDevice) -> GResult<()> {
     dev.load_ptx("mul_mat_q4_0", kernels::MATMUL)?;
     dev.load_ptx("rope_f32", kernels::ROPE)?;
     dev.load_ptx("cpy_f32_f16", kernels::CPY)?;
+    dev.load_ptx("cpy_f32_f32", kernels::CPY)?;
+    dev.load_ptx("scale_f32", kernels::SCALE)?;
+    dev.load_ptx("add_f32", kernels::ADD)?;
+    dev.load_ptx("add_f32", kernels::ADD)?;
+    dev.load_ptx("soft_max_f32", kernels::SOFTMAX)?;
+    dev.load_ptx("silu_f32", kernels::UNARY)?;
     Ok(())
 }

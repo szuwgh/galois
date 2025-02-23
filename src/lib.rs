@@ -8,7 +8,7 @@ pub mod cuda;
 #[macro_use]
 pub mod macros; // 导入宏模块
 pub mod error;
-pub mod ggml_quants;
+pub mod ggml_quants;use crate::ggml_quants::BlockQ4K;
 pub mod kernels;
 use crate::cuda::CudaDevice;use crate::cuda::CudaStorageSliceView;
 pub mod op;
@@ -121,13 +121,7 @@ pub trait TensorProto: Sized {
         let dtype = self.dtype() as usize;
         let bytes = self.as_bytes_mut();
         assert!(bytes.len() as usize % GS_TYPE_SIZE[dtype as usize] == 0);
-        let len = bytes.len() / GS_TYPE_SIZE[dtype]; //* GS_BLCK_SIZE[dtype]
-                                                     // println!(
-                                                     //     "bytes len:{},len:{},GS_TYPE_SIZE:{}",
-                                                     //     bytes.len(),
-                                                     //     len,
-                                                     //     GS_TYPE_SIZE[dtype]
-                                                     // );
+        let len = bytes.len() / GS_TYPE_SIZE[dtype]; 
         std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, len)
     }
 
@@ -177,7 +171,7 @@ pub trait TensorProto: Sized {
         })
     }
 
-    fn view<'a: 'b, 'b>(&'a self) -> TensorView<'b> {
+    fn view(&self) -> TensorView<'_> {
         TensorView {
             dtype: self.dtype().clone(),
             data: self.storage().view(),
@@ -306,6 +300,32 @@ pub enum GGmlType {
 }
 
 impl GGmlType {
+    pub fn typ_name(&self)->&str{
+        match self{
+            GGmlType::F32 => "F32",
+            GGmlType::F16 => "F16",
+            GGmlType:: Q4_0 => "Q4_0",
+            GGmlType:: Q4_1 => "Q4_1",
+            // // GGML_TYPE_Q4_2 = 4, support has been removed
+            // // GGML_TYPE_Q4_3 (5) support has been removed
+            GGmlType:: Q5_0=> "Q5_0",
+            GGmlType:: Q5_1=> "Q5_1",
+            GGmlType:: Q8_0 => "Q8_0",
+            GGmlType:: Q8_1 => "Q8_1",
+            // k-quantizations
+            GGmlType:: Q2K => "Q2K",
+            GGmlType::Q3K=> "Q3K",
+            GGmlType::Q4K =>"Q4K",
+            GGmlType::Q5K => "Q5K",
+            GGmlType:: Q6K => "Q6K",
+            GGmlType:: Q8K => "Q8K",
+            GGmlType::I8 => "I8",
+            GGmlType::I16 => "I16",
+            GGmlType::I32=> "I32",  
+            _=>"unknown",
+        }
+    }
+
     pub fn from_usize(u: usize) -> Self {
         match u {
             0 => GGmlType::F32,
@@ -348,7 +368,7 @@ pub const GS_TYPE_SIZE: [usize; GGmlType::TypeCount as usize] = [
     0,                                //Q8_1
     0,                                //Q2K
     0,                                //Q3K
-    0,                                //Q4K
+    std::mem::size_of::<BlockQ4K>(),  //Q4K
     0,                                //Q5K
     std::mem::size_of::<BlockQ6K>(),  //Q6K
     0,                                //Q8K
@@ -370,7 +390,7 @@ pub const GS_BLCK_SIZE: [usize; GGmlType::TypeCount as usize] = [
     1,     //Q8_1
     1,     //Q2K
     1,     //Q3K
-    1,     //Q4K
+    QK_K,     //Q4K
     1,     //Q5K
     QK_K,  //Q6K
     1,     //Q8K
@@ -697,6 +717,61 @@ impl TensorType for i32 {
 impl TensorType for BlockQ4_0 {
     const DTYPE: GGmlType = GGmlType::Q4_0;
 
+    fn to_f32(&self) -> f32 {
+        todo!()
+    }
+
+    fn from_f32(x: f32) -> Self {
+        todo!()
+    }
+
+    fn from_x<X: TensorType>(x: X) -> Self {
+        todo!()
+    }
+
+    fn to_f16(&self) -> f16 {
+        todo!()
+    }
+
+    fn to_i32(&self) -> i32 {
+        todo!()
+    }
+
+    fn to_usize(&self) -> usize {
+        todo!()
+    }
+
+    fn reduce_sum(chunk: &[Self]) -> Self {
+        todo!()
+    }
+
+    fn vec_silu(n: usize, y: &mut [Self], x: &[Self]) {
+        todo!()
+    }
+
+    fn vec_scale(n: usize, y: &mut [Self], v: Self) {
+        todo!()
+    }
+
+    fn softmax(nc: usize, dp: &mut [Self], sp: &[Self]) {
+        todo!()
+    }
+
+    fn rms_norm(ne00: usize, x: &[Self], y: &mut [Self], eps: f32) {
+        todo!()
+    }
+
+    fn vec_add(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        todo!()
+    }
+
+    fn vec_mul(inp1: &[Self], inp2: &[Self], dst: &mut [Self]) {
+        todo!()
+    }
+}
+
+impl TensorType for BlockQ4K {
+    const DTYPE: GGmlType = GGmlType::Q4K;
     fn to_f32(&self) -> f32 {
         todo!()
     }
@@ -1084,14 +1159,6 @@ impl<A: TensorType, const N: usize, const M: usize> NdArray for Vec<[[A; N]; M]>
                 );
                 CpuStorageSlice::F32(raw)
             }
-            // GGmlType::F64 => {
-            //     let raw = RawPtr::from_raw_parts(
-            //         self.as_ptr() as *mut f64,
-            //         self.len() * N * M,
-            //         self.capacity(),
-            //     );
-            //     CpuStorageSlice::F64(RawSlice::Own(raw))
-            // }
             _ => {
                 todo!()
             }
@@ -1548,6 +1615,7 @@ impl<'a> TensorIter<'a> {
 #[derive(Clone)]
 pub enum CpuStorageView<'a> {
     Q4_0(RawSliceView<'a, BlockQ4_0>),
+    Q4K(RawSliceView<'a, BlockQ4K>),
     Q6K(RawSliceView<'a, BlockQ6K>),
     F16(RawSliceView<'a, f16>),
     F32(RawSliceView<'a, f32>),
@@ -1558,6 +1626,7 @@ impl<'a> CpuStorageView<'a> {
     pub(crate) fn view(&self) -> CpuStorageView<'a> {
         return match self {
             CpuStorageView::Q4_0(v) => CpuStorageView::Q4_0(v.as_ref()),
+            CpuStorageView::Q4K(v) => CpuStorageView::Q4K(v.as_ref()),
             CpuStorageView::Q6K(v) => CpuStorageView::Q6K(v.as_ref()),
             CpuStorageView::F16(v) => CpuStorageView::F16(v.as_ref()),
             CpuStorageView::F32(v) => CpuStorageView::F32(v.as_ref()),
@@ -1568,6 +1637,7 @@ impl<'a> CpuStorageView<'a> {
     pub(crate) fn offset(&self, i: usize) -> CpuStorageView<'a> {
         return match self {
             CpuStorageView::Q4_0(v) => CpuStorageView::Q4_0(v.offset(i)),
+            CpuStorageView::Q4K(v) => CpuStorageView::Q4K(v.offset(i)),
             CpuStorageView::Q6K(v) => CpuStorageView::Q6K(v.offset(i)),
             CpuStorageView::F16(v) => CpuStorageView::F16(v.offset(i)),
             CpuStorageView::F32(v) => CpuStorageView::F32(v.offset(i)),
@@ -1578,6 +1648,7 @@ impl<'a> CpuStorageView<'a> {
     pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         return match self {
             CpuStorageView::Q4_0(v) => v.as_bytes_mut(),
+            CpuStorageView::Q4K(v) => v.as_bytes_mut(),
             CpuStorageView::Q6K(v) => v.as_bytes_mut(),
             CpuStorageView::F16(v) => v.as_bytes_mut(),
             CpuStorageView::F32(v) => v.as_bytes_mut(),
@@ -1588,17 +1659,31 @@ impl<'a> CpuStorageView<'a> {
     pub(crate) fn as_bytes(&self) -> &[u8] {
         return match self {
             CpuStorageView::Q4_0(v) => v.as_bytes(),
+            CpuStorageView::Q4K(v) => v.as_bytes(),
             CpuStorageView::Q6K(v) => v.as_bytes(),
             CpuStorageView::F16(v) => v.as_bytes(),
             CpuStorageView::F32(v) => v.as_bytes(),
             CpuStorageView::I32(v) => v.as_bytes(),
         };
     }
+
+    fn slice_type(&self) -> GGmlType {
+        match self {
+            CpuStorageView::Q4_0(_) => GGmlType::Q4_0,
+            CpuStorageView::Q4K(_) => GGmlType::Q4K,
+            CpuStorageView::F16(_) => GGmlType::F16,
+            CpuStorageView::F32(_) => GGmlType::F32,
+            CpuStorageView::I32(_) => GGmlType::I32,
+            CpuStorageView::Q6K(_) => GGmlType::Q6K,
+        }
+    }
+
 }
 
 #[derive(Clone)]
 pub enum CpuStorageSlice {
     Q4_0(RawSlice<BlockQ4_0>),
+    Q4K(RawSlice<BlockQ4K>),
     Q6K(RawSlice<BlockQ6K>),
     F16(RawSlice<f16>),
     F32(RawSlice<f32>),
@@ -1611,6 +1696,7 @@ impl CpuStorageSlice {
     pub(crate) fn offset<'a>(&'a self, i: usize) -> CpuStorageView<'a> {
         return match self {
             CpuStorageSlice::Q4_0(v) => CpuStorageView::Q4_0(v.offset(i)),
+            CpuStorageSlice::Q4K(v) => CpuStorageView::Q4K(v.offset(i)),
             CpuStorageSlice::Q6K(v) => CpuStorageView::Q6K(v.offset(i)),
             CpuStorageSlice::F16(v) => CpuStorageView::F16(v.offset(i)),
             CpuStorageSlice::F32(v) => CpuStorageView::F32(v.offset(i)),
@@ -1621,6 +1707,7 @@ impl CpuStorageSlice {
     pub(crate) fn view<'a>(&'a self) -> CpuStorageView<'a> {
         return match self {
             CpuStorageSlice::Q4_0(v) => CpuStorageView::Q4_0(v.as_ref()),
+            CpuStorageSlice::Q4K(v) => CpuStorageView::Q4K(v.as_ref()),
             CpuStorageSlice::Q6K(v) => CpuStorageView::Q6K(v.as_ref()),
             CpuStorageSlice::F16(v) => CpuStorageView::F16(v.as_ref()),
             CpuStorageSlice::F32(v) => CpuStorageView::F32(v.as_ref()),
@@ -1631,10 +1718,10 @@ impl CpuStorageSlice {
     pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         return match self {
             CpuStorageSlice::Q4_0(v) => v.as_bytes_mut(),
+            CpuStorageSlice::Q4K(v) => v.as_bytes_mut(),
             CpuStorageSlice::Q6K(v) => v.as_bytes_mut(),
             CpuStorageSlice::F16(v) => v.as_bytes_mut(),
             CpuStorageSlice::F32(v) => v.as_bytes_mut(),
-            // CpuStorageSlice::F64(v) => v.as_bytes_mut(),
             CpuStorageSlice::I32(v) => v.as_bytes_mut(),
         };
     }
@@ -1642,6 +1729,7 @@ impl CpuStorageSlice {
     pub(crate) fn as_bytes(&self) -> &[u8] {
         return match self {
             CpuStorageSlice::Q4_0(v) => v.as_bytes(),
+            CpuStorageSlice::Q4K(v) => v.as_bytes(),
             CpuStorageSlice::Q6K(v) => v.as_bytes(),
             CpuStorageSlice::F16(v) => v.as_bytes(),
             CpuStorageSlice::F32(v) => v.as_bytes(),
@@ -1649,24 +1737,14 @@ impl CpuStorageSlice {
         };
     }
 
-    // pub(crate) fn as_ref(&self) -> CpuStorageSlice {
-    //     return match self {
-    //         CpuStorageSlice::Q4_0(v) => CpuStorageSlice::Q4_0(v.as_ref()),
-    //         CpuStorageSlice::Q6K(v) => CpuStorageSlice::Q6K(v.as_ref()),
-    //         CpuStorageSlice::F16(v) => CpuStorageSlice::F16(v.as_ref()),
-    //         CpuStorageSlice::F32(v) => CpuStorageSlice::F32(v.as_ref()),
-    //         //  CpuStorageSlice::F64(v) => CpuStorageSlice::F64(v.as_ref()),
-    //         CpuStorageSlice::I32(v) => CpuStorageSlice::I32(v.as_ref()),
-    //     };
-    // }
 
     pub(crate) fn len(&self) -> usize {
         return match self {
             CpuStorageSlice::Q4_0(v) => v.len(),
+            CpuStorageSlice::Q4K(v) => v.len(),
             CpuStorageSlice::Q6K(v) => v.len(),
             CpuStorageSlice::F16(v) => v.len(),
             CpuStorageSlice::F32(v) => v.len(),
-            //CpuStorageSlice::F64(v) => v.len(),
             CpuStorageSlice::I32(v) => v.len(),
         };
     }
@@ -1739,6 +1817,7 @@ impl<'a> StorageProto for StorageView<'a> {
     }
 }
 
+#[derive(Clone)]
 pub enum StorageView<'a> {
     Cpu(CpuStorageView<'a>),
     Gpu(CudaStorageView<'a>), //todo!
@@ -1788,6 +1867,7 @@ pub enum StorageView<'a> {
 //     }
 // }
 
+#[derive(Clone)]
 pub enum Storage {
     Cpu(CpuStorageSlice),
     Gpu(CudaStorage),
@@ -1923,6 +2003,13 @@ impl<'a> TensorProto for TensorView<'a> {
                 dtype,
                 dev.clone(),
             )),
+            GGmlType::Q4K => Ok(TensorView::from_storage(
+                StorageView::Cpu(CpuStorageView::Q4K(RawSliceView::from_bytes(v))),
+                n_dims,
+                s,
+                dtype,
+                dev.clone(),
+            )),
             GGmlType::Q6K => Ok(TensorView::from_storage(
                 StorageView::Cpu(CpuStorageView::Q6K(RawSliceView::from_bytes(v))),
                 n_dims,
@@ -2007,6 +2094,13 @@ impl TensorProto for Tensor {
                 dtype,
                 dev,
             ),
+            GGmlType::Q4K => Tensor::from_cpu_storage(
+                CpuStorageSlice::Q4K(RawSlice::from_raw(v.to_vec())),
+                n_dims,
+                s,
+                dtype,
+                dev,
+            ),
             GGmlType::Q6K => Tensor::from_cpu_storage(
                 CpuStorageSlice::Q6K(RawSlice::from_raw(v.to_vec())),
                 n_dims,
@@ -2051,6 +2145,7 @@ impl TensorProto for Tensor {
 
 unsafe impl<'a> Send for TensorView<'a> {}
 
+#[derive(Clone)]
 pub struct TensorView<'a> {
     dtype: GGmlType,
     data: StorageView<'a>,
@@ -2166,6 +2261,7 @@ impl<'a> TensorView<'a> {
 
 unsafe impl Send for Tensor {}
 
+#[derive(Clone)]
 pub struct Tensor {
     dtype: GGmlType,
     data: Storage,

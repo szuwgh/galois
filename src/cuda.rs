@@ -31,6 +31,8 @@ const WARP_SIZE: usize = 32;
 
 use core::net;
 use std::sync::Arc;
+
+#[derive(Clone)]
 pub struct CudaStorage {
     slice: CudaStorageSlice,
     device: CudaDevice,
@@ -106,6 +108,7 @@ impl CudaStorage {
     }
 }
 
+#[derive(Clone)]
 pub struct CudaStorageView<'a> {
     slice: CudaStorageSliceView<'a>,
     device: CudaDevice,
@@ -153,11 +156,33 @@ pub enum CudaStorageSlice {
     I32(CudaSlice<i32>),
 }
 
+impl Clone for CudaStorageSlice {
+    fn clone(&self) -> Self {
+        match self {
+            CudaStorageSlice::Q4_0(v) => CudaStorageSlice::Q4_0(v.clone()),
+            CudaStorageSlice::F16(v) => CudaStorageSlice::F16(v.clone()),
+            CudaStorageSlice::F32(v) => CudaStorageSlice::F32(v.clone()),
+            CudaStorageSlice::I32(v) => CudaStorageSlice::I32(v.clone()),
+        }
+    }
+}
+
 pub enum CudaStorageSliceView<'a> {
     Q4_0(CudaView<'a, BlockQ4_0>),
     F16(CudaView<'a, F16>),
     F32(CudaView<'a, f32>),
     I32(CudaView<'a, i32>),
+}
+
+impl Clone for CudaStorageSliceView<'_> {
+    fn clone(&self) -> Self {
+        match self {
+            CudaStorageSliceView::Q4_0(v) => CudaStorageSliceView::Q4_0(v.slice(..)),
+            CudaStorageSliceView::F16(v) => CudaStorageSliceView::F16(v.slice(..)),
+            CudaStorageSliceView::F32(v) => CudaStorageSliceView::F32(v.slice(..)),
+            CudaStorageSliceView::I32(v) => CudaStorageSliceView::I32(v.slice(..)),
+        }
+    }
 }
 
 impl<'a> CudaStorageSliceView<'a> {
@@ -212,6 +237,9 @@ impl CudaDevice {
                     device: self.clone(),
                 })
             }
+            CpuStorageSlice::Q4K(v) => {
+                todo!()
+            }
             CpuStorageSlice::Q6K(v) => {
                 todo!()
             }
@@ -234,6 +262,9 @@ impl CudaDevice {
     pub(crate) fn from_cpu_storage_view(&self, c: CpuStorageView) -> GResult<CudaStorage> {
         match c {
             CpuStorageView::Q4_0(v) => {
+                todo!()
+            }
+            CpuStorageView::Q4K(v) => {
                 todo!()
             }
             CpuStorageView::Q6K(v) => {
@@ -277,6 +308,86 @@ impl CudaDevice {
 }
 
 pub(crate) trait CudaMap2 {
+    fn cuda_cpy_tensor_2d<'a, X: TensorType + cudarc::driver::DeviceRepr>(
+        &self,
+        dst: &'a CudaView<'a, X>,
+        src: &'a CudaView<'a, X>,
+        src_d: &Dim,
+        i3: usize,
+        i2: usize,
+        i1_low: usize,
+        i1_high: usize,
+        dev: &CudaDevice,
+    ) -> GResult<()> {
+        let ne0 = src_d.dim_0();
+        let (nb0, nb1, nb2, nb3) = src_d.stride_4d();
+        let ts = X::byte_size();
+        let bs = X::blck_size();
+        let i1_diff = i1_high - i1_low;
+        let x = src.slice((i1_low * nb1 + i2 * nb2 + i3 * nb3)..);
+        println!(
+            "i1_diff:{},nb0:{},nb1:{},ne0:{},bs:{},ts:{}",
+            i1_diff, nb0, nb1, ne0, bs, ts
+        );
+        if nb0 == 1 && nb1 == ne0 / bs {
+            //let dst1 = dst.slice((..i1_diff * nb1));
+            unsafe {
+                lib().cudaMemcpyAsync(
+                    *dst.device_ptr() as *mut _,
+                    *x.device_ptr() as *const _,
+                    i1_diff * nb1 * ts,
+                    cudaMemcpyDeviceToDevice,
+                    dev.device.cu_stream().clone() as *mut cudarc::runtime::sys::CUstream_st,
+                );
+            }
+        } else if nb0 == 1 {
+            unsafe {
+                lib().cudaMemcpy2DAsync(
+                    *dst.device_ptr() as *mut _,
+                    ts * ne0 / bs,
+                    *x.device_ptr() as *const _,
+                    nb1 * ts,
+                    ts * ne0 / bs,
+                    i1_diff,
+                    cudaMemcpyDeviceToDevice,
+                    dev.device.cu_stream().clone() as *mut cudarc::runtime::sys::CUstream_st,
+                );
+            }
+        } else {
+            for i1 in 0..i1_diff {
+                let rx = x.slice(i1 * nb1..);
+                let rd = dst.slice(i1 * ne0 / bs..);
+                unsafe {
+                    lib().cudaMemcpy2DAsync(
+                        *rd.device_ptr() as *mut _,
+                        ts / bs,
+                        *rx.device_ptr() as *const _,
+                        nb0 * ts,
+                        ts / bs,
+                        ne0,
+                        cudaMemcpyDeviceToDevice,
+                        dev.device.cu_stream().clone() as *mut cudarc::runtime::sys::CUstream_st,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    //gpu cpu
+    fn f_g_c<T: TensorType + cudarc::driver::DeviceRepr>(
+        &self,
+        inp0: &CudaView<T>,
+        inp0_d: &Dim,
+        inp1: &[T],
+        inp1_d: &Dim,
+        dst: &CudaView<T>,
+        dst_d: &Dim,
+        dev: &CudaDevice,
+    ) -> GResult<()> {
+        todo!()
+    }
+
     fn f<T: TensorType + cudarc::driver::DeviceRepr>(
         &self,
         inp0: &CudaView<T>,
@@ -322,7 +433,7 @@ pub(crate) trait CudaMap2 {
         todo!()
     }
 
-    fn f_q_f32_f32<T: QuantType + TensorType + cudarc::driver::DeviceRepr>(
+    fn f_q_f32_f32<T: QuantType + TensorType + cudarc::driver::DeviceRepr + ValidAsZeroBits>(
         &self,
         inp0: &CudaView<T>,
         inp0_d: &Dim,
@@ -333,6 +444,33 @@ pub(crate) trait CudaMap2 {
         dev: &CudaDevice,
     ) -> GResult<()> {
         todo!()
+    }
+
+    fn map2(
+        &self,
+        dev1: CudaStorageView,
+        d1: &Dim,
+        dev2: CpuStorageView,
+        d2: &Dim,
+        dst: &CudaStorageView,
+        d3: &Dim,
+    ) -> GResult<()> {
+        match (dev1.slice(), &dev2, dst.slice()) {
+            (
+                CudaStorageSliceView::F32(v1),
+                CpuStorageView::F32(v2),
+                CudaStorageSliceView::F32(d),
+            ) => self.f_g_c(v1, d1, v2.as_slice(), d2, d, d3, dev1.device()),
+            _ => {
+                println!(
+                    "{:?} {:?} {:?}",
+                    dev1.slice_type(),
+                    dev2.slice_type(),
+                    dst.slice_type()
+                );
+                todo!()
+            }
+        }
     }
 
     fn map(
@@ -431,6 +569,7 @@ const MATRIX_ROW_PADDING: usize = 512;
 const GGML_CUDA_DMMV_X: usize = 32;
 const CUDA_QUANTIZE_BLOCK_SIZE: usize = 256;
 const CUDA_DEQUANTIZE_BLOCK_SIZE: usize = 256;
+const CUDA_SCALE_BLOCK_SIZE: usize = 256;
 
 const MMQ_X_Q4_0_RDNA2: usize = 64;
 const MMQ_Y_Q4_0_RDNA2: usize = 128;
@@ -495,72 +634,6 @@ impl CudaMatMul {
         };
         let q_f16_func = dev.get_or_load_func("dequantize_block_f32_to_f16", kernels::MATMUL)?;
         unsafe { q_f16_func.launch(cfg, (inp1, dst, k, 1, 1)) }?;
-        Ok(())
-    }
-
-    fn cuda_cpy_tensor_2d<'a, X: TensorType + cudarc::driver::DeviceRepr>(
-        &self,
-        dst: &'a CudaView<'a, X>,
-        src: &'a CudaView<'a, X>,
-        src_d: &Dim,
-        i3: usize,
-        i2: usize,
-        i1_low: usize,
-        i1_high: usize,
-        dev: &CudaDevice,
-    ) -> GResult<()> {
-        let ne0 = src_d.dim_0();
-        let (nb0, nb1, nb2, nb3) = src_d.stride_4d();
-        let ts = X::byte_size();
-        let bs = X::blck_size();
-        let i1_diff = i1_high - i1_low;
-        let x = src.slice((i1_low * nb1 + i2 * nb2 + i3 * nb3)..);
-        println!(
-            "i1_diff:{},nb0:{},nb1:{},ne0:{},bs:{},ts:{}",
-            i1_diff, nb0, nb1, ne0, bs, ts
-        );
-        if nb0 == 1 && nb1 == ne0 / bs {
-            //let dst1 = dst.slice((..i1_diff * nb1));
-            unsafe {
-                lib().cudaMemcpyAsync(
-                    *dst.device_ptr() as *mut _,
-                    *x.device_ptr() as *const _,
-                    i1_diff * nb1 * ts,
-                    cudaMemcpyDeviceToDevice,
-                    dev.device.cu_stream().clone() as *mut cudarc::runtime::sys::CUstream_st,
-                );
-            }
-        } else if nb0 == 1 {
-            unsafe {
-                lib().cudaMemcpy2DAsync(
-                    *dst.device_ptr() as *mut _,
-                    ts * ne0 / bs,
-                    *x.device_ptr() as *const _,
-                    nb1 * ts,
-                    ts * ne0 / bs,
-                    i1_diff,
-                    cudaMemcpyDeviceToDevice,
-                    dev.device.cu_stream().clone() as *mut cudarc::runtime::sys::CUstream_st,
-                );
-            }
-        } else {
-            for i1 in 0..i1_diff {
-                let rx = x.slice(i1 * nb1..);
-                let rd = dst.slice(i1 * ne0 / bs..);
-                unsafe {
-                    lib().cudaMemcpy2DAsync(
-                        *rd.device_ptr() as *mut _,
-                        ts / bs,
-                        *rx.device_ptr() as *const _,
-                        nb0 * ts,
-                        ts / bs,
-                        ne0,
-                        cudaMemcpyDeviceToDevice,
-                        dev.device.cu_stream().clone() as *mut cudarc::runtime::sys::CUstream_st,
-                    );
-                }
-            }
-        }
         Ok(())
     }
 
@@ -760,15 +833,21 @@ impl CudaMatMul {
     fn convert_to_q8<
         X: TensorType + cudarc::driver::DeviceRepr,
         Y: QuantType + cudarc::driver::DeviceRepr,
+        A: DevicePtr<X>,
+        B: DevicePtr<Y>,
     >(
         &self,
-        inp1: &CudaView<X>,
-        inp1_q: &CudaSlice<Y>,
+        inp1: &A,
+        inp1_q: &B,
         ne10: usize,
         nrows1: usize,
         src1_padded_col_size: usize,
         dev: &CudaDevice,
-    ) -> GResult<()> {
+    ) -> GResult<()>
+    where
+        for<'a> &'a A: DeviceRepr,
+        for<'b> &'b B: DeviceRepr,
+    {
         let block_num_x =
             (src1_padded_col_size + CUDA_QUANTIZE_BLOCK_SIZE - 1) / CUDA_QUANTIZE_BLOCK_SIZE;
         let q_q8_func = dev.get_or_load_func("quantize_q8_1", kernels::MATMUL)?;
@@ -837,24 +916,6 @@ impl CudaMap2 for CudaMatMul {
                 let src0_is_contiguous = inp0_d.ggml_is_contiguous();
                 let src1_is_contiguous = inp1_d.ggml_is_contiguous();
 
-                // let size_src0_ddq = inp0_d.elem_count();
-                // let src0_dd = dev.device.alloc_zeros::<X>(size_src0_ddq)?;
-
-                // let size_src0_ddq = inp1_d.elem_count();
-                // let src1_dd = dev.device.alloc_zeros::<Y>(size_src0_ddq)?;
-
-                // let inp0_tmp = if !src0_is_contiguous {
-                //     &src0_dd.slice(0..)
-                // } else {
-                //     inp0
-                // };
-
-                // let inp1_tmp = if !src1_is_contiguous {
-                //     &src1_dd.slice(0..)
-                // } else {
-                //     inp1
-                // };
-
                 let mut src0_dd = None;
                 let mut src1_dd = None;
 
@@ -883,7 +944,7 @@ impl CudaMap2 for CudaMatMul {
                     let dst_dd_i = dst.slice(((i0 * ne1 + src1_col_0) * ne0)..);
 
                     if src1_is_contiguous {
-                        todo!();
+                        //todo!();
                     } else {
                         self.cuda_cpy_tensor_2d(
                             &src1_ddf_i,
@@ -928,7 +989,7 @@ impl CudaMap2 for CudaMatMul {
         Ok(())
     }
 
-    fn f_q_f32_f32<T: QuantType + TensorType + cudarc::driver::DeviceRepr>(
+    fn f_q_f32_f32<T: QuantType + TensorType + cudarc::driver::DeviceRepr + ValidAsZeroBits>(
         &self,
         inp0: &CudaView<T>,
         inp0_d: &Dim,
@@ -979,21 +1040,43 @@ impl CudaMap2 for CudaMatMul {
                 ne10 - ne10 % MATRIX_ROW_PADDING + MATRIX_ROW_PADDING
             };
             let blk_siz = T::BLCK_SIZE;
+
+            let mut src0_dd = None;
+            let mut src1_dd = None;
+
+            let inp0_tmp = if !src0_is_contiguous {
+                let size_src0_ddq = inp0_d.elem_count();
+                src0_dd = Some(dev.device.alloc_zeros::<T>(size_src0_ddq)?);
+                &src0_dd.as_ref().unwrap().slice(0..)
+            } else {
+                inp0
+            };
+
+            let inp1_tmp = if !src1_is_contiguous {
+                let size_src1_ddq = inp1_d.elem_count();
+                src1_dd = Some(dev.device.alloc_zeros::<f32>(size_src1_ddq)?);
+                &src1_dd.as_ref().unwrap().slice(0..)
+            } else {
+                inp1
+            };
+
             let inp1_q: CudaSlice<BlockQ8_1> = dev
                 .device
                 .alloc_zeros::<BlockQ8_1>(inp1.len() / BlockQ8_1::BLCK_SIZE)?;
             let i02_divisor = ne12 / ne02;
-
             let nrows_dst = ne0;
-            self.convert_to_q8(inp1, &inp1_q, ne10, nrows1, src1_padded_col_size, dev)?;
+
+            if src1_is_contiguous {
+                self.convert_to_q8(inp1_tmp, &inp1_q, ne10, nrows1, src1_padded_col_size, dev)?;
+            }
             for i0 in 0..ne13 * ne12 {
                 let i03 = i0 / ne12;
                 let i02 = i0 % ne12;
 
                 let src1_ddq_i_offset =
                     (i0 * ne11 + 0) * src1_padded_col_size / BlockQ8_1::BLCK_SIZE;
-                let src1_ddf_i = inp1.slice((i0 * ne11 + 0) * ne10..);
-                let src0_dd_i = inp0.slice(((i0 / i02_divisor) * ne01 * ne00 / blk_siz)..);
+                let src1_ddf_i = inp1_tmp.slice((i0 * ne11 + 0) * ne10..);
+                let src0_dd_i = inp0_tmp.slice(((i0 / i02_divisor) * ne01 * ne00 / blk_siz)..);
                 let src1_ddq_i = inp1_q.slice(src1_ddq_i_offset..);
                 let dst_dd_i = dst.slice(((i0 * ne1 + 0) * ne0)..);
 
@@ -1007,6 +1090,17 @@ impl CudaMap2 for CudaMatMul {
                         i02,
                         0,
                         0 + src1_ncols,
+                        dev,
+                    )?;
+                }
+
+                if !src1_is_contiguous {
+                    self.convert_to_q8(
+                        &src1_ddf_i,
+                        &src1_ddq_i,
+                        ne10,
+                        src1_ncols,
+                        src1_padded_col_size,
                         dev,
                     )?;
                 }
@@ -1083,8 +1177,11 @@ impl CudaMap for CudaRmsNorm {
     }
 }
 
+const CUDA_ADD_BLOCK_SIZE: usize = 256;
 const CUDA_MUL_BLOCK_SIZE: usize = 256;
 const CUDA_ROPE_BLOCK_SIZE: usize = 256;
+const CUDA_SILU_BLOCK_SIZE: usize = 256;
+
 pub(crate) struct CudaMul;
 
 impl CudaMap2 for CudaMul {
@@ -1109,6 +1206,35 @@ impl CudaMap2 for CudaMul {
             shared_mem_bytes: 0,
         };
         let func = dev.get_or_load_func("mul_f32", kernels::MUL)?;
+        unsafe { func.launch(cfg, (inp0, inp1, dst, kx, ky)) }?;
+        Ok(())
+    }
+}
+
+pub(crate) struct CudaAdd;
+
+impl CudaMap2 for CudaAdd {
+    fn f<T: TensorType + cudarc::driver::DeviceRepr>(
+        &self,
+        inp0: &CudaView<T>,
+        inp0_d: &Dim,
+        inp1: &CudaView<T>,
+        inp1_d: &Dim,
+        dst: &CudaView<T>,
+        dst_d: &Dim,
+        dev: &CudaDevice,
+    ) -> GResult<()> {
+        assert!(T::DTYPE == GGmlType::F32);
+        let (ne10, ne11) = inp1_d.dim2();
+        let kx = inp0_d.elem_count();
+        let ky = ne10 * ne11;
+        let num_blocks = (kx + CUDA_ADD_BLOCK_SIZE - 1) / CUDA_ADD_BLOCK_SIZE;
+        let cfg = LaunchConfig {
+            grid_dim: (CUDA_ADD_BLOCK_SIZE as u32, 1, 1),
+            block_dim: (num_blocks as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let func = dev.get_or_load_func("add_f32", kernels::ADD)?;
         unsafe { func.launch(cfg, (inp0, inp1, dst, kx, ky)) }?;
         Ok(())
     }
@@ -1253,6 +1379,61 @@ struct F16Dim {
 pub(crate) struct CudaCpy;
 
 impl CudaCpy {
+    fn cpy_cuda<
+        X: TensorType + cudarc::driver::DeviceRepr,
+        Y: TensorType + cudarc::driver::DeviceRepr,
+    >(
+        &self,
+        src: &CudaView<X>,
+        dst: &CudaView<Y>,
+        ne: usize,
+        ne00: usize,
+        ne01: usize,
+        nb00: usize,
+        nb01: usize,
+        nb02: usize,
+        ne10: usize,
+        ne11: usize,
+        nb10: usize,
+        nb11: usize,
+        nb12: usize,
+        func_name: &str,
+        dev: &CudaDevice,
+    ) -> GResult<()> {
+        let num_blocks = (ne + CUDA_CPY_BLOCK_SIZE - 1) / CUDA_CPY_BLOCK_SIZE;
+        let cfg = LaunchConfig {
+            grid_dim: (num_blocks as u32, 1, 1),
+            block_dim: (CUDA_CPY_BLOCK_SIZE as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let func = dev.get_or_load_func(func_name, kernels::CPY)?;
+        unsafe {
+            func.launch(
+                cfg,
+                (
+                    src,
+                    dst,
+                    ne,
+                    F32Dim {
+                        ne00: ne00 as i32,
+                        ne01: ne01 as i32,
+                        nb00: nb00 as i32,
+                        nb01: nb01 as i32,
+                        nb02: nb02 as i32,
+                    },
+                    F16Dim {
+                        ne10: ne10 as i32,
+                        ne11: ne11 as i32,
+                        nb10: nb10 as i32,
+                        nb11: nb11 as i32,
+                        nb12: nb12 as i32,
+                    },
+                ),
+            )
+        }?;
+        Ok(())
+    }
+
     fn cpy_f32_f16_cuda<
         X: TensorType + cudarc::driver::DeviceRepr,
         Y: TensorType + cudarc::driver::DeviceRepr,
@@ -1311,6 +1492,60 @@ impl CudaCpy {
 }
 
 impl CudaMap for CudaCpy {
+    fn f<T: TensorType + cudarc::driver::DeviceRepr>(
+        &self,
+        inp0: &CudaView<T>,
+        inp0_d: &Dim,
+        dst: &CudaView<T>,
+        dst_d: &Dim,
+        dev: &CudaDevice,
+    ) -> GResult<()> {
+        assert!(T::DTYPE == GGmlType::F32);
+        let ne = inp0_d.elem_count(); //ggml_nelements(src0);
+        assert!(ne == dst_d.elem_count());
+
+        assert!(inp0_d.elem_count() * T::byte_size() <= usize::MAX);
+        assert!(dst_d.elem_count() * T::byte_size() <= usize::MAX);
+
+        let (ne00, ne01) = inp0_d.dim2();
+
+        assert!(inp0_d.dim_3() == 1);
+        let (_nb00, _nb01, _nb02) = inp0_d.stride_3d();
+        let (nb00, nb01, nb02) = (
+            _nb00 * T::byte_size(),
+            _nb01 * T::byte_size(),
+            _nb02 * T::byte_size(),
+        );
+
+        let (ne10, ne11) = dst_d.dim2();
+        assert!(dst_d.dim_3() == 1);
+
+        let (_nb10, _nb11, _nb12) = dst_d.stride_3d();
+        let (nb10, nb11, nb12) = (
+            _nb10 * T::byte_size(),
+            _nb11 * T::byte_size(),
+            _nb12 * T::byte_size(),
+        );
+        self.cpy_cuda(
+            inp0,
+            dst,
+            ne,
+            ne00,
+            ne01,
+            nb00,
+            nb01,
+            nb02,
+            ne10,
+            ne11,
+            nb10,
+            nb11,
+            nb12,
+            "cpy_f32_f32",
+            dev,
+        )?;
+        Ok(())
+    }
+
     fn f_x_y<
         X: TensorType + cudarc::driver::DeviceRepr,
         Y: TensorType + cudarc::driver::DeviceRepr,
@@ -1352,6 +1587,99 @@ impl CudaMap for CudaCpy {
             inp0, dst, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12, dev,
         )?;
 
+        Ok(())
+    }
+}
+
+pub(crate) struct CudaScale;
+
+impl CudaScale {
+    fn cuda_scale_f32<T: TensorType + cudarc::driver::DeviceRepr>(
+        &self,
+        inp0: &CudaView<T>,
+        dst: &CudaView<T>,
+        scale: T,
+        k: usize,
+        dev: &CudaDevice,
+    ) -> GResult<()> {
+        assert!(T::DTYPE == GGmlType::F32);
+        let num_blocks = (k + CUDA_SCALE_BLOCK_SIZE - 1) / CUDA_SCALE_BLOCK_SIZE;
+        let cfg = LaunchConfig {
+            grid_dim: (num_blocks as u32, 1, 1),
+            block_dim: (CUDA_SCALE_BLOCK_SIZE as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let func = dev.get_or_load_func("scale_f32", kernels::SCALE)?;
+        unsafe { func.launch(cfg, (inp0, dst, scale, k)) }?;
+        Ok(())
+    }
+}
+
+impl CudaMap2 for CudaScale {
+    fn f_g_c<T: TensorType + cudarc::driver::DeviceRepr>(
+        &self,
+        inp0: &CudaView<T>,
+        inp0_d: &Dim,
+        inp1: &[T],
+        inp1_d: &Dim,
+        dst: &CudaView<T>,
+        dst_d: &Dim,
+        dev: &CudaDevice,
+    ) -> GResult<()> {
+        assert!(T::DTYPE == GGmlType::F32);
+        assert!(inp1.len() > 0);
+        let scale = inp1[0];
+        self.cuda_scale_f32(inp0, dst, scale, inp0_d.elem_count(), dev)?;
+        Ok(())
+    }
+}
+
+pub(crate) struct CudaSoftMax;
+
+impl CudaMap for CudaSoftMax {
+    fn f<T: TensorType + cudarc::driver::DeviceRepr>(
+        &self,
+        inp0: &CudaView<T>,
+        inp0_d: &Dim,
+        dst: &CudaView<T>,
+        dst_d: &Dim,
+        dev: &CudaDevice,
+    ) -> GResult<()> {
+        assert!(T::DTYPE == GGmlType::F32);
+        let ne00 = inp0_d.dim_0();
+        let nrows = inp0_d.nrows();
+        let cfg = LaunchConfig {
+            grid_dim: (nrows as u32, 1, 1),
+            block_dim: (1, WARP_SIZE as u32, 1),
+            shared_mem_bytes: 0,
+        };
+        let func = dev.get_or_load_func("soft_max_f32", kernels::SOFTMAX)?;
+        unsafe { func.launch(cfg, (inp0, dst, ne00)) }?;
+        Ok(())
+    }
+}
+
+pub struct CudaSilu;
+
+impl CudaMap for CudaSilu {
+    fn f<T: TensorType + cudarc::driver::DeviceRepr>(
+        &self,
+        inp0: &CudaView<T>,
+        inp0_d: &Dim,
+        dst: &CudaView<T>,
+        dst_d: &Dim,
+        dev: &CudaDevice,
+    ) -> GResult<()> {
+        assert!(T::DTYPE == GGmlType::F32);
+        let k = inp0_d.elem_count();
+        let num_blocks = (k + CUDA_SILU_BLOCK_SIZE - 1) / CUDA_SILU_BLOCK_SIZE;
+        let cfg = LaunchConfig {
+            grid_dim: (num_blocks as u32, 1, 1),
+            block_dim: (CUDA_SILU_BLOCK_SIZE as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let func = dev.get_or_load_func("silu_f32", kernels::UNARY)?;
+        unsafe { func.launch(cfg, (inp0, dst, k)) }?;
         Ok(())
     }
 }

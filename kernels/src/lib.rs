@@ -1,5 +1,9 @@
+pub const ADD: &str = include_str!(concat!(env!("OUT_DIR"), "/add.ptx"));
 pub const CPY: &str = include_str!(concat!(env!("OUT_DIR"), "/cpy.ptx"));
 pub const MATMUL: &str = include_str!(concat!(env!("OUT_DIR"), "/matmul.ptx"));
 pub const MUL: &str = include_str!(concat!(env!("OUT_DIR"), "/mul.ptx"));
 pub const RMS_NORM: &str = include_str!(concat!(env!("OUT_DIR"), "/rms_norm.ptx"));
 pub const ROPE: &str = include_str!(concat!(env!("OUT_DIR"), "/rope.ptx"));
+pub const SCALE: &str = include_str!(concat!(env!("OUT_DIR"), "/scale.ptx"));
+pub const SOFTMAX: &str = include_str!(concat!(env!("OUT_DIR"), "/softmax.ptx"));
+pub const UNARY: &str = include_str!(concat!(env!("OUT_DIR"), "/unary.ptx"));

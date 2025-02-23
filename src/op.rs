@@ -1,3 +1,4 @@
+use crate::cuda::CudaAdd;
 use crate::cuda::CudaCpy;
 use crate::cuda::CudaMap;
 use crate::cuda::CudaMap2;
@@ -5,6 +6,9 @@ use crate::cuda::CudaMatMul;
 use crate::cuda::CudaMul;
 use crate::cuda::CudaRmsNorm;
 use crate::cuda::CudaRope;
+use crate::cuda::CudaScale;
+use crate::cuda::CudaSilu;
+use crate::cuda::CudaSoftMax;
 use crate::error::GResult;
 use crate::ggml_quants::QuantType;
 use crate::CpuStorageView;
@@ -403,7 +407,7 @@ impl Map2 for Add {
             //         dst_ptr[i] = src0_ptr[i] + inp2[j * nb11 + i * nb10];
             //     }
             // }
-            println!("不连续");
+            // println!("不连续");
             todo!()
 
             // dst.par_chunks_mut(nb1)
@@ -419,7 +423,7 @@ impl Map2 for Add {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        println!("{} time:{} ns", Self::OP, time2 - time1);
+        // println!("{} time:{} ns", Self::OP, time2 - time1);
         Ok(())
     }
 
@@ -473,12 +477,12 @@ impl Map2 for Mul {
         dst: &mut [T],
         dst_d: &Dim,
     ) -> GResult<()> {
-        println!(
-            "{:?},{:?},{:?}",
-            inp0_d.shape(),
-            inp1_d.shape(),
-            dst_d.shape()
-        );
+        // println!(
+        //     "{:?},{:?},{:?}",
+        //     inp0_d.shape(),
+        //     inp1_d.shape(),
+        //     dst_d.shape()
+        // );
         assert!(
             // is_same_shape(inp1_d.shape(), inp2_d.shape())
             is_same_shape(inp0_d.shape(), dst_d.shape())
@@ -565,7 +569,7 @@ impl Map2 for Mul {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        println!("{} time:{} ns", Self::OP, time2 - time1);
+        // println!("{} time:{} ns", Self::OP, time2 - time1);
         Ok(())
     }
 
@@ -1589,7 +1593,7 @@ impl Map2 for MatMul {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        println!("quant {} time:{} ms", Self::OP, time2 - time1);
+        // println!("quant {} time:{} ms", Self::OP, time2 - time1);
         return Ok(());
     }
 
@@ -2362,53 +2366,6 @@ impl Map2 for Scale {
         todo!()
     }
 
-    // fn f_x_y_x<X: TensorType, Y: TensorType>(
-    //     &self,
-    //     inp0: &[X],
-    //     inp0_d: &Dim,
-    //     inp1: &[Y],
-    //     inp1_d: &Dim,
-    //     dst: &mut [X],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-    // fn f_quant_num<T: QuantType, X>(
-    //     &self,
-    //     inp1: &[T],
-    //     inp1_d: &Dim,
-    //     inp2: &[X],
-    //     inp2_d: &Dim,
-    //     dst: &mut [X],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-
-    // fn f_x_y_x<X, Y>(
-    //     &self,
-    //     inp: &[X],
-    //     inp_d: &Dim,
-    //     k: &[Y],
-    //     k_d: &Dim,
-    //     dst: &mut [X],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-
-    // fn f_quant_num2<T: QuantType, X, Y>(
-    //     &self,
-    //     inp1: &[T],
-    //     inp1_d: &Dim,
-    //     inp2: &[X],
-    //     inp2_d: &Dim,
-    //     dst: &mut [Y],
-    //     dst_d: &Dim,
-    // ) -> GResult<()> {
-    //     todo!()
-    // }
-
     fn f<T: TensorType>(
         &self,
         inp0: &[T],
@@ -2425,7 +2382,7 @@ impl Map2 for Scale {
 
         // scale factor
         let v = inp1[0];
-        println!("v:{:?}", v);
+        // println!("v:{:?}", v);
 
         let ith = 0;
         let nth = 1;
@@ -2738,7 +2695,7 @@ impl Map2 for RopeCustom {
         let mut ir = 0;
 
         let theta_scale = (freq_base as f32).powf(-2.0 / n_dims as f32);
-        println!("theta_scale{}", theta_scale);
+        //  println!("theta_scale{}", theta_scale);
 
         let is_neox = mode & 2 != 0;
         let is_glm = mode & 4 != 0;
@@ -3113,11 +3070,18 @@ pub fn galois_repeat<T: TensorProto>(src: &T, dst: &mut T) -> GResult<()> {
     Ok(())
 }
 
-pub fn galois_add<T: TensorProto>(a: &T, b: &T, dst: &mut T) -> GResult<()> {
+pub fn galois_add<X: TensorProto, Y: TensorProto, R: TensorProto>(
+    a: &X,
+    b: &Y,
+    dst: &mut R,
+) -> GResult<()> {
     let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
     match (a.storage().view(), b.storage().view(), dst_device) {
-        (StorageView::Cpu(s), StorageView::Cpu(k), StorageView::Cpu(mut d)) => {
-            Add.map(s, a.dim(), k, b.dim(), &mut d, dst_dim)?;
+        (StorageView::Cpu(s0), StorageView::Cpu(s1), StorageView::Cpu(mut d)) => {
+            Add.map(s0, a.dim(), s1, b.dim(), &mut d, dst_dim)?;
+        }
+        (StorageView::Gpu(s0), StorageView::Gpu(s1), StorageView::Gpu(mut d)) => {
+            CudaAdd.map(s0, a.dim(), s1, b.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()
@@ -3146,7 +3110,7 @@ pub fn galois_matmul<X: TensorProto, Y: TensorProto, Z: TensorProto>(
     Ok(())
 }
 
-pub fn galois_mul<T: TensorProto>(a: &T, b: &T, dst: &mut T) -> GResult<()> {
+pub fn galois_mul<X: TensorProto, Y: TensorProto>(a: &X, b: &Y, dst: &mut X) -> GResult<()> {
     let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
     match (a.storage().view(), b.storage().view(), dst_device) {
         (StorageView::Cpu(a1), StorageView::Cpu(b1), StorageView::Cpu(mut d)) => {
@@ -3226,6 +3190,9 @@ pub fn galois_cont<T: TensorProto>(src: &T, dst: &mut T) -> GResult<()> {
         (StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
             Cpy.map(s, src.dim(), &mut d, dst_dim)?;
         }
+        (StorageView::Gpu(s), StorageView::Gpu(mut d)) => {
+            CudaCpy.map(s, src.dim(), &mut d, dst_dim)?;
+        }
         _ => {
             todo!()
         }
@@ -3252,6 +3219,9 @@ pub fn galois_soft_max<T: TensorProto>(src: &T, dst: &mut T) -> GResult<()> {
         (StorageView::Cpu(s), StorageView::Cpu(mut d)) => {
             SoftMax.map(s, src.dim(), &mut d, dst_dim)?;
         }
+        (StorageView::Gpu(s), StorageView::Gpu(mut d)) => {
+            CudaSoftMax.map(s, src.dim(), &mut d, dst_dim)?;
+        }
         _ => {
             todo!()
         }
@@ -3270,6 +3240,14 @@ pub fn galois_unary<T: TensorProto>(src: &T, dst: &mut T, op: UnaryOp) -> GResul
                 todo!()
             }
         },
+        (StorageView::Gpu(s), StorageView::Gpu(mut d)) => match op {
+            UnaryOp::Silu => {
+                CudaSilu.map(s, src.dim(), &mut d, dst_dim)?;
+            }
+            _ => {
+                todo!()
+            }
+        },
         _ => {
             todo!()
         }
@@ -3277,11 +3255,21 @@ pub fn galois_unary<T: TensorProto>(src: &T, dst: &mut T, op: UnaryOp) -> GResul
     Ok(())
 }
 
-pub fn galois_scale<T: TensorProto>(src0: &T, src1: &T, dst: &mut T) -> GResult<()> {
+pub fn galois_scale<X: TensorProto, Y: TensorProto>(
+    src0: &X,
+    src1: &Y,
+    dst: &mut X,
+) -> GResult<()> {
     let (dst_device, dst_dim) = (dst.storage().view(), dst.dim());
     match (src0.storage().view(), src1.storage().view(), dst_device) {
         (StorageView::Cpu(s0), StorageView::Cpu(s1), StorageView::Cpu(mut d)) => {
             Scale.map(s0, src0.dim(), s1, src1.dim(), &mut d, dst_dim)?;
+        }
+        (StorageView::Gpu(s0), StorageView::Gpu(s1), StorageView::Gpu(mut d)) => {
+            CudaScale.map(s0, src0.dim(), s1, src1.dim(), &mut d, dst_dim)?;
+        }
+        (StorageView::Gpu(s0), StorageView::Cpu(s1), StorageView::Gpu(mut d)) => {
+            CudaScale.map2(s0, src0.dim(), s1, src1.dim(), &mut d, dst_dim)?;
         }
         _ => {
             todo!()

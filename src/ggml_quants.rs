@@ -1,11 +1,15 @@
 use crate::op::vec_dot_f16;
 use crate::{error::GResult, GGmlType};
+use byteorder::{ByteOrder, LittleEndian};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 use cudarc::driver::DeviceRepr;
 use cudarc::driver::ValidAsZeroBits;
 use half::f16;
 use std::ops::Sub;
+
+pub const K_SCALE_SIZE: usize = 12;
+
 pub const QK4_0: usize = 32;
 pub const QK4_1: usize = 32;
 pub const QK5_0: usize = 32;
@@ -13,6 +17,28 @@ pub const QK5_1: usize = 32;
 pub const QK8_0: usize = 32;
 pub const QK8_1: usize = 32;
 pub const QK_K: usize = 256;
+
+#[inline(always)]
+unsafe fn get_scale_shuffle_k4(i: usize) -> __m256i {
+    const K_SHUFFLE: [u8; 256] = [
+        0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+        0, 1, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3,
+        2, 3, 2, 3, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5,
+        4, 5, 4, 5, 4, 5, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7,
+        6, 7, 6, 7, 6, 7, 6, 7, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9,
+        8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10,
+        11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 12, 13, 12, 13, 12, 13,
+        12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12,
+        13, 12, 13, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15,
+        14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15,
+    ];
+    _mm256_loadu_si256((K_SHUFFLE.as_ptr() as *const __m256i).add(i))
+}
+
+#[inline(always)]
+unsafe fn mm256_set_m128i(a: __m128i, b: __m128i) -> __m256i {
+    _mm256_insertf128_si256(_mm256_castsi128_si256(b), a, 1)
+}
 
 #[inline(always)]
 unsafe fn get_scale_shuffle(i: usize) -> __m128i {
@@ -109,6 +135,7 @@ impl QuantType for f16 {
 }
 
 unsafe impl DeviceRepr for BlockQ4_0 {}
+unsafe impl ValidAsZeroBits for BlockQ4_0 {}
 
 #[derive(Default, Debug, Clone, PartialEq, Copy)]
 #[repr(C)]
@@ -126,7 +153,7 @@ impl BlockQ4_0 {
         &self.qs
     }
 
-    //  #[cfg(target_feature = "avx")]
+    #[cfg(target_feature = "avx")]
     pub(crate) fn vec_dot_q8_0(me: &[Self], other: &[BlockQ8_0]) -> f32 {
         assert!(me.len() == other.len());
         unsafe {
@@ -144,24 +171,24 @@ impl BlockQ4_0 {
         }
     }
 
-    // pub fn vec_dot_q8_0(me: &[Self], other: &[BlockQ8_0]) -> f32 {
-    //     let qk = QK8_0;
-    //     if n % QK8_0 != 0 {
-    //         crate::bail!("vec_dot_q4_0_q8_0: {n} is not divisible by {qk}")
-    //     }
-    //     // Generic implementation.
-    //     let mut sumf = 0f32;
-    //     for (xs, ys) in xs.iter().zip(ys.iter()) {
-    //         let mut sum_i = 0;
-    //         for j in 0..qk / 2 {
-    //             let v0 = (xs.qs[j] & 0x0F) as i32 - 8;
-    //             let v1 = (xs.qs[j] >> 4) as i32 - 8;
-    //             sum_i += v0 * ys.qs[j] as i32 + v1 * ys.qs[j + qk / 2] as i32
-    //         }
-    //         sumf += sum_i as f32 * f16::to_f32(xs.d) * f16::to_f32(ys.d)
-    //     }
-    //     Ok(sumf)
-    // }
+    fn vec_dot_unopt(n: usize, xs: &[Self], ys: &[BlockQ8_0]) -> f32 {
+        let qk = QK8_0;
+        if n % QK8_0 != 0 {
+            panic!("vec_dot_q4_0_q8_0: {n} is not divisible by {qk}")
+        }
+        // Generic implementation.
+        let mut sumf = 0f32;
+        for (xs, ys) in xs.iter().zip(ys.iter()) {
+            let mut sum_i = 0;
+            for j in 0..qk / 2 {
+                let v0 = (xs.qs[j] & 0x0F) as i32 - 8;
+                let v1 = (xs.qs[j] >> 4) as i32 - 8;
+                sum_i += v0 * ys.qs[j] as i32 + v1 * ys.qs[j + qk / 2] as i32
+            }
+            sumf += sum_i as f32 * f16::to_f32(xs.d) * f16::to_f32(ys.d)
+        }
+        sumf
+    }
 }
 
 impl QuantType for BlockQ4_0 {
@@ -173,7 +200,10 @@ impl QuantType for BlockQ4_0 {
     }
 
     fn vec_dot(me: &[Self], other: &[Self::VecDotType]) -> f32 {
-        Self::vec_dot_q8_0(me, other)
+        #[cfg(target_feature = "avx")]
+        return Self::vec_dot_q8_0(me, other);
+
+        return Self::vec_dot_unopt(me.len(), me, other);
     }
 
     fn to_f32(src: &[Self], dst: &mut [f32]) {
@@ -190,10 +220,6 @@ impl QuantType for BlockQ4_0 {
 
                 let v0 = (vi0 - 8) as f32 * d;
                 let v1 = (vi1 - 8) as f32 * d;
-                // println!(
-                //     "d = {:.6}, vi = {}, vi0 = {}, vi1 = {}, v0 = {:.6}, v1 = {:.6}",
-                //     d, vi, vi0, vi1, v0, v1,
-                // );
 
                 dst[i * qk + j + 0] = v0;
                 dst[i * qk + j + qk / 2] = v1;
@@ -343,6 +369,118 @@ pub(super) unsafe fn make_qx_quants(
         }
     }
     scale
+}
+
+#[derive(Debug, Clone, PartialEq, Copy)]
+// https://github.com/ggerganov/llama.cpp/blob/468ea24fb4633a0d681f7ac84089566c1c6190cb/k_quants.h#L82
+#[repr(C)]
+pub(crate) struct BlockQ4K {
+    pub(crate) d: f16,
+    pub(crate) dmin: f16,
+    pub(crate) scales: [u8; K_SCALE_SIZE],
+    pub(crate) qs: [u8; QK_K / 2],
+}
+const _: () = assert!(QK_K / 2 + K_SCALE_SIZE + 2 * 2 == std::mem::size_of::<BlockQ4K>());
+
+#[cfg(target_feature = "avx")]
+#[inline(always)]
+pub(crate) fn vec_dot_q4k_q8k(n: usize, xs: &[BlockQ4K], ys: &[BlockQ8K]) -> GResult<f32> {
+    if n % QK_K != 0 {
+        panic!("vec_dot_q4k_q8k: {n} is not divisible by {QK_K}")
+    }
+    let mut utmp = [0u32; 4];
+    const KMASK1: u32 = 0x3f3f3f3f;
+    const KMASK2: u32 = 0x0f0f0f0f;
+    const KMASK3: u32 = 0x03030303;
+
+    unsafe {
+        let m4 = _mm256_set1_epi8(0xF);
+
+        let mut acc = _mm256_setzero_ps();
+        let mut acc_m = _mm_setzero_ps();
+
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            let d = y.d * x.d.to_f32();
+            let dmin = -y.d * x.dmin.to_f32();
+
+            LittleEndian::read_u32_into(&x.scales, &mut utmp[0..3]);
+
+            utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
+            let uaux = utmp[1] & KMASK1;
+            utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
+            utmp[2] = uaux;
+            utmp[0] &= KMASK1;
+
+            let mut q4 = x.qs.as_ptr();
+            let mut q8 = y.qs.as_ptr();
+
+            let mins_and_scales = _mm256_cvtepu8_epi16(_mm_set_epi32(
+                utmp[3] as i32,
+                utmp[2] as i32,
+                utmp[1] as i32,
+                utmp[0] as i32,
+            ));
+
+            let q8sums = _mm256_loadu_si256(y.bsums.as_ptr() as *const __m256i);
+            let q8s = _mm_hadd_epi16(
+                _mm256_extracti128_si256(q8sums, 0),
+                _mm256_extracti128_si256(q8sums, 1),
+            );
+            let prod = _mm_madd_epi16(_mm256_extracti128_si256(mins_and_scales, 1), q8s);
+            acc_m = _mm_fmadd_ps(_mm_set1_ps(dmin), _mm_cvtepi32_ps(prod), acc_m);
+
+            let sc128 = _mm256_extracti128_si256(mins_and_scales, 0);
+            let scales = mm256_set_m128i(sc128, sc128);
+
+            let mut sumi = _mm256_setzero_si256();
+
+            for j in 0..QK_K / 64 {
+                let scale_l = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2 * j));
+                let scale_h = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2 * j + 1));
+
+                let q4bits = _mm256_loadu_si256(q4 as *const __m256i);
+                q4 = q4.add(32);
+                let q4l = _mm256_and_si256(q4bits, m4);
+                let q4h = _mm256_and_si256(_mm256_srli_epi16(q4bits, 4), m4);
+
+                let q8l = _mm256_loadu_si256(q8 as *const __m256i);
+                q8 = q8.add(32);
+                let p16l = _mm256_maddubs_epi16(q4l, q8l);
+                let p16l = _mm256_madd_epi16(scale_l, p16l);
+                sumi = _mm256_add_epi32(sumi, p16l);
+
+                let q8h = _mm256_loadu_si256(q8 as *const __m256i);
+                q8 = q8.add(32);
+                let p16h = _mm256_maddubs_epi16(q4h, q8h);
+                let p16h = _mm256_madd_epi16(scale_h, p16h);
+                sumi = _mm256_add_epi32(sumi, p16h);
+            }
+
+            let vd = _mm256_set1_ps(d);
+            acc = _mm256_fmadd_ps(vd, _mm256_cvtepi32_ps(sumi), acc);
+        }
+
+        let acc_m = _mm_add_ps(acc_m, _mm_movehl_ps(acc_m, acc_m));
+        let acc_m = _mm_add_ss(acc_m, _mm_movehdup_ps(acc_m));
+
+        Ok(hsum_float_8(acc) + _mm_cvtss_f32(acc_m))
+    }
+}
+
+impl QuantType for BlockQ4K {
+    const BLCK_SIZE: usize = QK_K;
+    type VecDotType = BlockQ8K;
+    fn from_f32(src: &[f32], dst: &mut [Self]) -> GResult<()> {
+        todo!()
+    }
+
+    fn vec_dot(me: &[Self], other: &[Self::VecDotType]) -> f32 {
+        todo!()
+    }
+
+    fn to_f32(src: &[Self], dst: &mut [f32]) {
+        todo!()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]

@@ -85,11 +85,11 @@ impl From<CublasError> for GError {
     }
 }
 
-// impl From<String> for GError {
-//     fn from(e: String) -> Self {
-//         GError::Unexpected(e)
-//     }
-// }
+impl From<String> for GError {
+    fn from(e: String) -> Self {
+        GError::Unexpected(e)
+    }
+}
 
 // impl From<IOError> for GError {
 //     fn from(e: IOError) -> Self {
