@@ -607,7 +607,7 @@ impl CudaMatMul {
             shared_mem_bytes: 0,
         };
         let func = dev
-            .get_or_load_func("mul_mat_p021_f16_f32", kernels::MATMUL)
+            .get_or_load_func("mul_mat_p021_f16_f32", galois_kernels::MATMUL)
             .unwrap();
         unsafe {
             func.launch(
@@ -632,7 +632,8 @@ impl CudaMatMul {
             block_dim: (CUDA_DEQUANTIZE_BLOCK_SIZE as u32, 1, 1),
             shared_mem_bytes: 0,
         };
-        let q_f16_func = dev.get_or_load_func("dequantize_block_f32_to_f16", kernels::MATMUL)?;
+        let q_f16_func =
+            dev.get_or_load_func("dequantize_block_f32_to_f16", galois_kernels::MATMUL)?;
         unsafe { q_f16_func.launch(cfg, (inp1, dst, k, 1, 1)) }?;
         Ok(())
     }
@@ -661,7 +662,8 @@ impl CudaMatMul {
             block_dim: (CUDA_DEQUANTIZE_BLOCK_SIZE as u32, 1, 1),
             shared_mem_bytes: 0,
         };
-        let q_f32_func = dev.get_or_load_func("dequantize_block_f16_to_f32", kernels::MATMUL)?;
+        let q_f32_func =
+            dev.get_or_load_func("dequantize_block_f16_to_f32", galois_kernels::MATMUL)?;
         unsafe { q_f32_func.launch(cfg, (inp0, dst, k, 1, 1)) }?;
         Ok(())
     }
@@ -799,7 +801,7 @@ impl CudaMatMul {
         let block_num_y = (ncols_y + mmq_x - 1) / mmq_x;
 
         let func = dev
-            .get_or_load_func("mul_mat_q4_0", kernels::MATMUL)
+            .get_or_load_func("mul_mat_q4_0", galois_kernels::MATMUL)
             .unwrap();
 
         let cfg: LaunchConfig = LaunchConfig {
@@ -850,7 +852,7 @@ impl CudaMatMul {
     {
         let block_num_x =
             (src1_padded_col_size + CUDA_QUANTIZE_BLOCK_SIZE - 1) / CUDA_QUANTIZE_BLOCK_SIZE;
-        let q_q8_func = dev.get_or_load_func("quantize_q8_1", kernels::MATMUL)?;
+        let q_q8_func = dev.get_or_load_func("quantize_q8_1", galois_kernels::MATMUL)?;
         let cfg = LaunchConfig {
             grid_dim: (block_num_x as u32, nrows1 as u32, 1),
             block_dim: (CUDA_DEQUANTIZE_BLOCK_SIZE as u32, 1, 1),
@@ -1019,7 +1021,8 @@ impl CudaMap2 for CudaMatMul {
             };
             let blk_siz = T::BLCK_SIZE;
             let i02_divisor = ne12 / ne02;
-            let func = dev.get_or_load_func("dequantize_mul_mat_vec_q4_0", kernels::MATMUL)?;
+            let func =
+                dev.get_or_load_func("dequantize_mul_mat_vec_q4_0", galois_kernels::MATMUL)?;
             for i0 in 0..ne13 * ne12 {
                 let src0_dd_i = inp0.slice(((i0 / i02_divisor) * ne01 * ne00 / blk_siz)..);
                 let src1_ddf_i = inp1.slice((i0 * ne11 + 0) * ne10..);
@@ -1152,7 +1155,7 @@ impl CudaMap for CudaRmsNorm {
         let ne00 = inp0_d.dim1();
         let nrows = inp0_d.nrows();
         assert!(ne00 % 32 == 0);
-        let func = dev.get_or_load_func("rms_norm_f32", kernels::RMS_NORM)?;
+        let func = dev.get_or_load_func("rms_norm_f32", galois_kernels::RMS_NORM)?;
         let (cfg, block_size) = if ne00 < 1024 {
             (
                 LaunchConfig {
@@ -1205,7 +1208,7 @@ impl CudaMap2 for CudaMul {
             block_dim: (num_blocks as u32, 1, 1),
             shared_mem_bytes: 0,
         };
-        let func = dev.get_or_load_func("mul_f32", kernels::MUL)?;
+        let func = dev.get_or_load_func("mul_f32", galois_kernels::MUL)?;
         unsafe { func.launch(cfg, (inp0, inp1, dst, kx, ky)) }?;
         Ok(())
     }
@@ -1234,7 +1237,7 @@ impl CudaMap2 for CudaAdd {
             block_dim: (num_blocks as u32, 1, 1),
             shared_mem_bytes: 0,
         };
-        let func = dev.get_or_load_func("add_f32", kernels::ADD)?;
+        let func = dev.get_or_load_func("add_f32", galois_kernels::ADD)?;
         unsafe { func.launch(cfg, (inp0, inp1, dst, kx, ky)) }?;
         Ok(())
     }
@@ -1274,7 +1277,7 @@ impl CudaRope {
             block_dim: (1, CUDA_ROPE_BLOCK_SIZE as u32, 1),
             shared_mem_bytes: 0,
         };
-        let func = dev.get_or_load_func("rope_f32", kernels::ROPE)?;
+        let func = dev.get_or_load_func("rope_f32", galois_kernels::ROPE)?;
         unsafe {
             func.launch(
                 cfg,
@@ -1406,7 +1409,7 @@ impl CudaCpy {
             block_dim: (CUDA_CPY_BLOCK_SIZE as u32, 1, 1),
             shared_mem_bytes: 0,
         };
-        let func = dev.get_or_load_func(func_name, kernels::CPY)?;
+        let func = dev.get_or_load_func(func_name, galois_kernels::CPY)?;
         unsafe {
             func.launch(
                 cfg,
@@ -1462,7 +1465,7 @@ impl CudaCpy {
             block_dim: (CUDA_CPY_BLOCK_SIZE as u32, 1, 1),
             shared_mem_bytes: 0,
         };
-        let func = dev.get_or_load_func("cpy_f32_f16", kernels::CPY)?;
+        let func = dev.get_or_load_func("cpy_f32_f16", galois_kernels::CPY)?;
         unsafe {
             func.launch(
                 cfg,
@@ -1609,7 +1612,7 @@ impl CudaScale {
             block_dim: (CUDA_SCALE_BLOCK_SIZE as u32, 1, 1),
             shared_mem_bytes: 0,
         };
-        let func = dev.get_or_load_func("scale_f32", kernels::SCALE)?;
+        let func = dev.get_or_load_func("scale_f32", galois_kernels::SCALE)?;
         unsafe { func.launch(cfg, (inp0, dst, scale, k)) }?;
         Ok(())
     }
@@ -1653,7 +1656,7 @@ impl CudaMap for CudaSoftMax {
             block_dim: (1, WARP_SIZE as u32, 1),
             shared_mem_bytes: 0,
         };
-        let func = dev.get_or_load_func("soft_max_f32", kernels::SOFTMAX)?;
+        let func = dev.get_or_load_func("soft_max_f32", galois_kernels::SOFTMAX)?;
         unsafe { func.launch(cfg, (inp0, dst, ne00)) }?;
         Ok(())
     }
@@ -1678,7 +1681,7 @@ impl CudaMap for CudaSilu {
             block_dim: (CUDA_SILU_BLOCK_SIZE as u32, 1, 1),
             shared_mem_bytes: 0,
         };
-        let func = dev.get_or_load_func("silu_f32", kernels::UNARY)?;
+        let func = dev.get_or_load_func("silu_f32", galois_kernels::UNARY)?;
         unsafe { func.launch(cfg, (inp0, dst, k)) }?;
         Ok(())
     }
@@ -1688,7 +1691,7 @@ impl CudaMap for CudaSilu {
 mod tests {
     use crate::kernels::init_cuda_function;
     use crate::{op::galois_mul, Device, Shape, Tensor, TensorProto};
-    use kernels::RMS_NORM;
+    use galois_kernels::RMS_NORM;
 
     use super::*;
     use crate::multiply_tuple;
