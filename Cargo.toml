@@ -5,7 +5,6 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-
 [dependencies]
 rawpointer = { version = "0.2" }
 thiserror = "1.0"
@@ -15,7 +14,7 @@ num_cpus = "1.15.0"
 rayon = "1.7.0"
 lazy_static = "1.5.0"
 cudarc = { version = "0.13.3", default-features = false, features = ["runtime", "driver", "cuda-12050", "cublas", "f16"] }
-kernels = {path = "./kernels"}
+kernels = {path = "./kernels", version = "0.1.0"}
 byteorder = "1.5.0"
 
 [build-dependencies]  
