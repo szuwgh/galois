@@ -2,6 +2,10 @@
 name = "galois-kernels"
 version = "0.1.0"
 edition = "2024"
+description = "galois cuda kernels"
+
+[package]
+license = "MIT"
 
 [dependencies]
 
