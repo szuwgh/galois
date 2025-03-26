@@ -1,5 +1,5 @@
 [package]
-name = "galois"
+name = "wwml"
 version = "0.1.0"
 edition = "2021"
 description = "Tensor library for AI"
