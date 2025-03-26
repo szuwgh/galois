@@ -34,6 +34,11 @@ impl BinaryOp for f32 {
     }
 }
 
+pub trait TensorSimilar {}
+
+impl TensorSimilar for Tensor {}
+impl TensorSimilar for TensorView<'_> {}
+
 pub trait Similarity {
     // 欧式距离/欧几里得距离
     fn euclidean<T: TensorProto>(&self, other: &T) -> f32;
